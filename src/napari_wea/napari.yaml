@@ -1,0 +1,10 @@
+name: napari-WEA
+display_name: Wound Edge Analysis
+contributions:
+  commands:
+    - id: napari-WEA.make_qwidget
+      title: Wound Analysis command
+      python_name: napari_wea._widget:WEAWidget
+  widgets:
+    - command: napari-WEA.make_qwidget
+      display_name: Wound Analysis Widget
