@@ -8,15 +8,18 @@ Replace code below according to your needs.
 """
 
 from napari_plugin_engine import napari_hook_implementation
+from napari.qt.threading import thread_worker
 from qtpy.QtWidgets import (
     QWidget,
     QVBoxLayout,
+    QHBoxLayout,
     QGroupBox,
     QPushButton,
     QLabel,
     QComboBox,
     QListWidget,
     QFileDialog,
+    QDoubleSpinBox,
 )
 from pathlib import Path
 import WEA
@@ -38,6 +41,9 @@ class WEAWidget(QWidget):
     def __init__(self, napari_viewer):
         super().__init__()
         self.viewer = napari_viewer
+
+        self.current_img = None
+        self.fov = None
 
         # main layout
         self.layout = QVBoxLayout()
@@ -73,6 +79,32 @@ class WEAWidget(QWidget):
         self.ch_groupbox.setLayout(self.ch_vbox)
         self.layout.addWidget(self.ch_groupbox)
 
+        # WEA option interface
+        self.wea_groupbox = QGroupBox("Segmentation parameters")
+        self.wea_vbox = QVBoxLayout()
+        nuc_field_widget = QWidget()
+        nuc_field_layout = QHBoxLayout()
+        cyto_field_widget = QWidget()
+        cyto_field_layout = QHBoxLayout()
+        nuc_field_widget.setLayout(nuc_field_layout)
+        cyto_field_widget.setLayout(cyto_field_layout)
+        nuc_label = QLabel("Nucleus diam. (µm)")
+        cyto_label = QLabel("Cell diam. (µm)")
+        self.cell_size_field = QDoubleSpinBox()
+        self.nucleus_size_field = QDoubleSpinBox()
+        self.cell_size_field.setRange(1, 1000)
+        self.nucleus_size_field.setRange(1, 1000)
+        cyto_field_layout.addWidget(cyto_label)
+        cyto_field_layout.addWidget(self.cell_size_field)
+        nuc_field_layout.addWidget(nuc_label)
+        nuc_field_layout.addWidget(self.nucleus_size_field)
+        self.run_singlerun_btn = QPushButton("Do it!")
+        self.wea_vbox.addWidget(cyto_field_widget)
+        self.wea_vbox.addWidget(nuc_field_widget)
+        self.wea_vbox.addWidget(self.run_singlerun_btn)
+        self.wea_groupbox.setLayout(self.wea_vbox)
+        self.layout.addWidget(self.wea_groupbox)
+
         # fill the rest of the vertical space so preceding widgets stack
         # from top-to-bottom
         self.setLayout(self.layout)
@@ -81,6 +113,7 @@ class WEAWidget(QWidget):
         # gui behavior
         self.choose_folder_btn.clicked.connect(self._open_file_dialog)
         self.assign_channels_btn.clicked.connect(self._update_channels)
+        self.run_singlerun_btn.clicked.connect(self._run_wea_single)
 
     def _open_file_dialog(self):
         self.flist_widget.clear()
@@ -125,8 +158,9 @@ class WEAWidget(QWidget):
 
         # update the channel groupboxes
         available_layers = [layer.name for layer in self.viewer.layers]
-        self.cytogroup.addItems(available_layers)  # may be removed
-        self.nucgroup.addItems(available_layers)  # may be removed
+
+        self.cytogroup.addItems(available_layers)
+        self.nucgroup.addItems(available_layers)
         self.tubgroup.addItems(available_layers)
 
     def _update_channels(self):
@@ -142,6 +176,8 @@ class WEAWidget(QWidget):
         if self.current_img.data.ndim == 4:
             # reduce by finding focus in tubulin channel
             img2d = self.current_img.get_focused_plane(tubulin_choice)
+        else:
+            img2d = self.current_img.data
 
         self.fov = WEA.core.ImageField(
             img2d,
@@ -173,6 +209,39 @@ class WEAWidget(QWidget):
             lo = np.percentile(layer.data, 0.1)
             hi = np.percentile(layer.data, 99.9)
             layer.contrast_limits = [lo, hi]
+
+    def _run_wea_single(self):
+        celldiam = self.cell_size_field.value()
+        nucdiam = self.nucleus_size_field.value()
+
+        if self.fov:
+            self.run_singlerun_btn.setText("Segmenting ...")
+            worker = self.__run_wea_task(celldiam, nucdiam)
+            worker.returned.connect(self.__display_result)
+            worker.finished.connect(self.__change_run_btn_status)
+            worker.start()
+
+    @thread_worker
+    def __run_wea_task(self, celldiam, nucdiam):
+        self.fov.segment_cells(celldiam=celldiam, nucdiam=nucdiam)
+        self.fov.run_detection(cell_diam=celldiam, nuc_diam=nucdiam)
+        cellpose_output, woundedge = self.fov._detection_result()
+        return {"labcells": cellpose_output, "woundedge": woundedge}
+
+    def __check_args(*args):
+        print(args)
+
+    def __change_run_btn_status(self):
+        self.run_singlerun_btn.setText("Do it!")
+
+    def __display_result(self, segresult):
+        self.viewer.add_labels(segresult["labcells"], name="detected cells")
+        self.viewer.add_labels(
+            segresult["woundedge"],
+            name="wound edge",
+            num_colors=1,
+            color={1: "red"},
+        )
 
 
 @napari_hook_implementation
