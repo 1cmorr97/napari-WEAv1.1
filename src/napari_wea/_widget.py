@@ -5,26 +5,29 @@ It implements the Widget specification.
 see: https://napari.org/plugins/stable/guides.html#widgets
 
 Replace code below according to your needs.
+
+05/29/2022 - added widget access from console (see https://forum.image.sc/t/access-plugin-dockwidget-instance-through-console/64201/5)
+
 """
 
-from napari_plugin_engine import napari_hook_implementation
-from napari.qt.threading import thread_worker
-from qtpy.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QGroupBox,
-    QPushButton,
-    QLabel,
-    QComboBox,
-    QListWidget,
-    QFileDialog,
-    QDoubleSpinBox,
-)
 from pathlib import Path
-import WEA
-import numpy as np
 
+import numpy as np
+import WEA
+from napari.qt.threading import thread_worker
+from napari_plugin_engine import napari_hook_implementation
+from qtpy.QtWidgets import (
+    QComboBox,
+    QDoubleSpinBox,
+    QFileDialog,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QListWidget,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 FILE_FORMATS = ["*.mrc", "*.dv", "*.nd2", "*.tif", "*.tiff"]
 
@@ -34,12 +37,17 @@ def argsort(seq):
 
 
 class WEAWidget(QWidget):
+    # for getting access of the widget from console, keep track of widget
+    _instance = None
     # your QWidget.__init__ can optionally request the napari viewer instance
     # in one of two ways:
     # 1. use a parameter called `napari_viewer`, as done here
     # 2. use a type annotation of 'napari.viewer.Viewer' for any parameter
     def __init__(self, napari_viewer):
         super().__init__()
+        
+        WEAWidget._instance = self
+
         self.viewer = napari_viewer
 
         self.current_img = None
@@ -91,16 +99,22 @@ class WEAWidget(QWidget):
         nuc_label = QLabel("Nucleus diam. (µm)")
         cyto_label = QLabel("Cell diam. (µm)")
         self.cell_size_field = QDoubleSpinBox()
+        # set default values for cell size
+        self.cell_size_field.setValue(75.0)
         self.nucleus_size_field = QDoubleSpinBox()
+        # set default value for nucleus size
+        self.nucleus_size_field.setValue(15.0)
         self.cell_size_field.setRange(1, 1000)
         self.nucleus_size_field.setRange(1, 1000)
         cyto_field_layout.addWidget(cyto_label)
         cyto_field_layout.addWidget(self.cell_size_field)
         nuc_field_layout.addWidget(nuc_label)
         nuc_field_layout.addWidget(self.nucleus_size_field)
+        self.sketch_cell_size = QPushButton("Sketch sizes")
         self.run_singlerun_btn = QPushButton("Do it!")
         self.wea_vbox.addWidget(cyto_field_widget)
         self.wea_vbox.addWidget(nuc_field_widget)
+        self.wea_vbox.addWidget(self.sketch_cell_size)
         self.wea_vbox.addWidget(self.run_singlerun_btn)
         self.wea_groupbox.setLayout(self.wea_vbox)
         self.layout.addWidget(self.wea_groupbox)
@@ -112,8 +126,14 @@ class WEAWidget(QWidget):
 
         # gui behavior
         self.choose_folder_btn.clicked.connect(self._open_file_dialog)
-        self.assign_channels_btn.clicked.connect(self._update_channels)
+        self.assign_channels_btn.clicked.connect(self._assign_channels)
+        self.sketch_cell_size.clicked.connect(self._sketch_cell)
         self.run_singlerun_btn.clicked.connect(self._run_wea_single)
+
+    @classmethod
+    def instance(cls):
+        """return current/last widget"""
+        return cls._instance
 
     def _open_file_dialog(self):
         self.flist_widget.clear()
@@ -139,31 +159,50 @@ class WEAWidget(QWidget):
         self.flist_widget.currentItemChanged.connect(self._fetch_img_info)
 
     def _fetch_img_info(self, key):
+        # save the number of channels available before clearing it up
+        prev_nch = self.cytogroup.count()
+        prev_chnames = [self.cytogroup.itemText(i) for i in range(prev_nch)]
+
         # clear all current layers
         self.viewer.layers.clear()
-        self.cytogroup.clear()
-        self.nucgroup.clear()
-        self.tubgroup.clear()
 
-        fname = key.text()
-        fpath = self.img_folder / fname
-        self.current_img = WEA.io.CanonizedImage(fpath)
-        ch_names = [
-            f"ch={i},{fname}" for i in range(self.current_img.data.shape[-1])
-        ]
+        if key:
+            fname = key.text()
+            fpath = self.img_folder / fname
+            self.current_img = WEA.io.CanonizedImage(fpath)
 
-        self.viewer.add_image(
-            self.current_img.data, name=ch_names, channel_axis=-1
-        )
+            current_nch = self.current_img.data.shape[-1]
 
-        # update the channel groupboxes
-        available_layers = [layer.name for layer in self.viewer.layers]
+            if current_nch != prev_nch:
+                ch_names = [f"ch={i}" for i in range(current_nch)]
 
-        self.cytogroup.addItems(available_layers)
-        self.nucgroup.addItems(available_layers)
-        self.tubgroup.addItems(available_layers)
+                self.viewer.add_image(
+                    self.current_img.data, name=ch_names, channel_axis=-1
+                )
 
-    def _update_channels(self):
+                # update the channel groupboxes
+                available_layers = [layer.name for layer in self.viewer.layers]
+
+                # clear current channel groups
+                self.cytogroup.clear()
+                self.nucgroup.clear()
+                self.tubgroup.clear()
+
+                # add new ones
+                self.cytogroup.addItems(available_layers)
+                self.nucgroup.addItems(available_layers)
+                self.tubgroup.addItems(available_layers)
+
+            else:
+                self.viewer.add_image(
+                    self.current_img.data, name=prev_chnames, channel_axis=-1
+                )
+
+    def _assign_channels(self):
+
+        if self.current_img is None:
+            return
+
         def ch_from_text(s):
             substr = s.split(",")[0]
             chstr = substr.split("=")[1]
@@ -206,11 +245,47 @@ class WEAWidget(QWidget):
 
         # change contrast limit to 1-99% percentile
         for layer in self.viewer.layers:
-            lo = np.percentile(layer.data, 0.1)
-            hi = np.percentile(layer.data, 99.9)
+            lo = np.percentile(layer.data, 0.5)
+            hi = np.percentile(layer.data, 99.5)
             layer.contrast_limits = [lo, hi]
 
+    def _sketch_cell(self):
+
+        if self.current_img is None:
+            return
+
+        cell_diam = self.cell_size_field.value()
+        nuc_diam = self.nucleus_size_field.value()
+
+        Ny, Nx = self.current_img.data.shape[:2]
+        imgcenter = (Ny // 2, Nx // 2)
+        cellrad_px = 0.5 * cell_diam / self.current_img.dxy
+        nucrad_px = 0.5 * nuc_diam / self.current_img.dxy
+        sketch_data = [
+            np.array([imgcenter, (cellrad_px, cellrad_px)]),
+            np.array([imgcenter, (nucrad_px, nucrad_px)]),
+        ]
+
+        # clear current sketch (if any)
+        if "sketch" in self.viewer.layers:
+            self.viewer.layers["sketch"].data = []
+            self.viewer.layers["sketch"].data = sketch_data
+            self.viewer.layers["sketch"].shape_type = "ellipse"
+            self.viewer.layers["sketch"].face_color = ["green", "blue"]
+
+        else:
+            self.viewer.add_shapes(
+                sketch_data,
+                name="sketch",
+                shape_type="ellipse",
+                face_color=["green", "blue"],
+            )
+
     def _run_wea_single(self):
+
+        if self.fov is None:
+            return
+
         celldiam = self.cell_size_field.value()
         nucdiam = self.nucleus_size_field.value()
 
@@ -226,7 +301,16 @@ class WEAWidget(QWidget):
         self.fov.segment_cells(celldiam=celldiam, nucdiam=nucdiam)
         self.fov.run_detection(cell_diam=celldiam, nuc_diam=nucdiam)
         cellpose_output, woundedge = self.fov._detection_result()
-        return {"labcells": cellpose_output, "woundedge": woundedge}
+        mtoc_df, cell_df = self.fov.run_analysis(
+            self.current_img.filename.name
+        )
+        self.run_singlerun_btn.setText("Analyzing ...")
+        return {
+            "labcells": cellpose_output,
+            "woundedge": woundedge,
+            "mtoc_df": mtoc_df,
+            "cell_df": cell_df,
+        }
 
     def __check_args(*args):
         print(args)
@@ -235,12 +319,16 @@ class WEAWidget(QWidget):
         self.run_singlerun_btn.setText("Do it!")
 
     def __display_result(self, segresult):
+
         self.viewer.add_labels(segresult["labcells"], name="detected cells")
         self.viewer.add_labels(
             segresult["woundedge"],
             name="wound edge",
             num_colors=1,
             color={1: "red"},
+        )
+        WEA.vis.add_to_napari(
+            self.viewer, segresult["mtoc_df"], segresult["cell_df"]
         )
 
 
