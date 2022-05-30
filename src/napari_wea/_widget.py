@@ -11,7 +11,7 @@ Replace code below according to your needs.
 """
 
 from pathlib import Path
-
+import webbrowser
 import numpy as np
 import WEA
 from napari.qt.threading import thread_worker
@@ -24,10 +24,13 @@ from qtpy.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QListWidget,
+    QLineEdit,
     QPushButton,
     QVBoxLayout,
     QWidget,
 )
+from qtpy.QtCore import QProcess
+
 
 FILE_FORMATS = ["*.mrc", "*.dv", "*.nd2", "*.tif", "*.tiff"]
 
@@ -43,9 +46,11 @@ class WEAWidget(QWidget):
     # in one of two ways:
     # 1. use a parameter called `napari_viewer`, as done here
     # 2. use a type annotation of 'napari.viewer.Viewer' for any parameter
+
     def __init__(self, napari_viewer):
+
         super().__init__()
-        
+
         WEAWidget._instance = self
 
         self.viewer = napari_viewer
@@ -136,10 +141,15 @@ class WEAWidget(QWidget):
         return cls._instance
 
     def _open_file_dialog(self):
-        self.flist_widget.clear()
+
         self.img_folder = Path(
             QFileDialog.getExistingDirectory(self, "Choose a folder", "~")
         )
+
+        if self.img_folder:
+            self.flist_widget.clear()
+        else:
+            return
 
         imgpath = Path(self.img_folder)
         flist = []
@@ -332,7 +342,83 @@ class WEAWidget(QWidget):
         )
 
 
+class GalleryWidget(QWidget):
+    def __init__(self, napari_viewer):
+        super().__init__()
+
+        self.p = None
+
+        self.layout = QVBoxLayout()
+        self.choose_folder_btn = QPushButton("Choose a folder")
+        self.input_folder_edit = QLineEdit()
+        self.run_gallery_btn = QPushButton("Run gallery server")
+        self.stop_gallery_btn = QPushButton("Stop gallery server")
+        self.server_status = QLabel("Status : ")
+
+        self.layout.addWidget(self.choose_folder_btn)
+        self.layout.addWidget(self.input_folder_edit)
+        self.layout.addWidget(self.run_gallery_btn)
+        self.layout.addWidget(self.stop_gallery_btn)
+        self.layout.addWidget(self.server_status)
+
+        self.setLayout(self.layout)
+        self.layout.addStretch()
+
+        self.choose_folder_btn.clicked.connect(self.choose_folder)
+        self.run_gallery_btn.clicked.connect(self.run_gallery)
+        self.stop_gallery_btn.clicked.connect(self.stop_gallery)
+
+    def choose_folder(self):
+        self.input_folder = Path(
+            QFileDialog.getExistingDirectory(
+                self, "Choose a folder", "~", QFileDialog.ShowDirsOnly
+            )
+        )
+
+        if self.input_folder:
+            self.input_folder_edit.setText(str(self.input_folder))
+
+    def run_gallery(self):
+        gallery_path = WEA.gallery.__path__[0]
+        input_dir = str(self.input_folder)
+        port_number = 5050
+        _args = [gallery_path + "/app.py", "--port", f"{port_number:d}", input_dir]
+        print("running ", _args)
+
+        if self.p is None:
+            print("Starting gallery")
+            self.p = QProcess()
+            self.p.stateChanged.connect(self.handle_state)
+            self.p.finished.connect(self.process_finished)
+            self.p.start("python", _args)
+            webbrowser.open(f"http://127.0.0.1:{port_number}", new=2)
+
+    def handle_state(self, state):
+        states = {
+            QProcess.NotRunning: 'Not running',
+            QProcess.Starting: 'Starting',
+            QProcess.Running: 'Running',
+        }
+        state_name = states[state]
+
+        if state_name == "Running":
+            self.server_status.setText("Status : running")
+            self.server_status.setStyleSheet("background-color: green;")
+        if state_name == "Not running":
+            self.server_status.setText("Status : not running")
+            self.server_status.setStyleSheet("")
+
+        print("Gallery state: ", state_name)
+
+    def process_finished(self):
+        self.p = None
+
+    def stop_gallery(self):
+        print("Terminating server...")
+        self.p.terminate()
+
+
 @napari_hook_implementation
 def napari_experimental_provide_dock_widget():
     # you can return either a single widget, or a sequence of widgets
-    return [WEAWidget]
+    return [WEAWidget, GalleryWidget]
