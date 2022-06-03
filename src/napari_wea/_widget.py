@@ -6,16 +6,20 @@ see: https://napari.org/plugins/stable/guides.html#widgets
 
 Replace code below according to your needs.
 
-05/29/2022 - added widget access from console (see https://forum.image.sc/t/access-plugin-dockwidget-instance-through-console/64201/5)
+05/29/2022 - added widget access from console
+            (see https://forum.image.sc/t/access-plugin-dockwidget-instance-through-console/64201/5)
 
 """
 
-from pathlib import Path
 import webbrowser
+from pathlib import Path
+
+import cv2
 import numpy as np
 import WEA
 from napari.qt.threading import thread_worker
 from napari_plugin_engine import napari_hook_implementation
+from qtpy.QtCore import QProcess
 from qtpy.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
@@ -23,14 +27,14 @@ from qtpy.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
-    QListWidget,
     QLineEdit,
+    QListWidget,
+    QProgressBar,
     QPushButton,
     QVBoxLayout,
     QWidget,
 )
-from qtpy.QtCore import QProcess
-
+from tifffile import imwrite
 
 FILE_FORMATS = ["*.mrc", "*.dv", "*.nd2", "*.tif", "*.tiff"]
 
@@ -39,9 +43,16 @@ def argsort(seq):
     return sorted(range(len(seq) - 1, -1, -1), key=seq.__getitem__)
 
 
+def ch_from_text(s):
+    substr = s.split(",")[0]
+    chstr = substr.split("=")[1]
+    return int(chstr)
+
+
 class WEAWidget(QWidget):
     # for getting access of the widget from console, keep track of widget
     _instance = None
+
     # your QWidget.__init__ can optionally request the napari viewer instance
     # in one of two ways:
     # 1. use a parameter called `napari_viewer`, as done here
@@ -124,6 +135,18 @@ class WEAWidget(QWidget):
         self.wea_groupbox.setLayout(self.wea_vbox)
         self.layout.addWidget(self.wea_groupbox)
 
+        # batch processing interface
+        self.batch_groupbox = QGroupBox("Batch processing")
+        self.batch_vbox = QVBoxLayout()
+        self.batch_progbar = QProgressBar()
+        self.run_batch_seg_btn = QPushButton("Run batch segmentation")
+        self.run_batch_analysis = QPushButton("Run batch analysis")
+        self.batch_vbox.addWidget(self.batch_progbar)
+        self.batch_vbox.addWidget(self.run_batch_seg_btn)
+        self.batch_vbox.addWidget(self.run_batch_analysis)
+        self.batch_groupbox.setLayout(self.batch_vbox)
+        self.layout.addWidget(self.batch_groupbox)
+
         # fill the rest of the vertical space so preceding widgets stack
         # from top-to-bottom
         self.setLayout(self.layout)
@@ -134,6 +157,8 @@ class WEAWidget(QWidget):
         self.assign_channels_btn.clicked.connect(self._assign_channels)
         self.sketch_cell_size.clicked.connect(self._sketch_cell)
         self.run_singlerun_btn.clicked.connect(self._run_wea_single)
+        self.run_batch_seg_btn.clicked.connect(self._run_batch_segmentation)
+        self.run_batch_analysis.clicked.connect(self._run_batch_analysis)
 
     @classmethod
     def instance(cls):
@@ -212,11 +237,6 @@ class WEAWidget(QWidget):
 
         if self.current_img is None:
             return
-
-        def ch_from_text(s):
-            substr = s.split(",")[0]
-            chstr = substr.split("=")[1]
-            return int(chstr)
 
         cytoplasm_choice = ch_from_text(self.cytogroup.currentText())
         nucleus_choice = ch_from_text(self.nucgroup.currentText())
@@ -341,6 +361,89 @@ class WEAWidget(QWidget):
             self.viewer, segresult["mtoc_df"], segresult["cell_df"]
         )
 
+    def _run_batch_segmentation(self):
+        Nfiles = self.flist_widget.count()
+        self.batch_progbar.setMinimum(0)
+        self.batch_progbar.setMaximum(Nfiles - 1)
+
+        self.run_batch_seg_btn.setText("... STOP segmentation")
+        worker = self._run_batch_segmentation_task()
+        worker.yielded.connect(self._update_batch_progbar)
+        worker.finished.connect(self._batch_seg_finished)
+        worker.start()
+
+    @thread_worker
+    def _run_batch_segmentation_task(self):
+        Nfiles = self.flist_widget.count()
+
+        # segmentation parameters
+        celldiam = self.cell_size_field.value()
+        nucdiam = self.nucleus_size_field.value()
+        pathdir = self.img_folder
+
+        cytoplasm_choice = ch_from_text(self.cytogroup.currentText())
+        nucleus_choice = ch_from_text(self.nucgroup.currentText())
+        tubulin_choice = ch_from_text(self.tubgroup.currentText())
+
+        # create a new folder for segmentation output
+        cpindir = pathdir / "cellpose_input"
+        segdir = pathdir / "segmentation_result"
+
+        cpindir.mkdir(exist_ok=True)
+        segdir.mkdir(exist_ok=True)
+
+        for i in range(Nfiles):
+
+            _item = self.flist_widget.item(i)
+            fname = _item.text()
+
+            current_img = WEA.io.CanonizedImage(pathdir / fname)
+
+            # get the more convenient Path object for the filename
+            current_fname = current_img.filename
+
+            if current_img.data.ndim == 4:
+                # reduce by finding focus in tubulin channel
+                img2d = current_img.get_focused_plane(tubulin_choice)
+            else:
+                img2d = current_img.data
+
+            current_fov = WEA.core.ImageField(
+                img2d,
+                current_img.dxy,
+                nucleus_ch=nucleus_choice,
+                cyto_channel=cytoplasm_choice,
+                tubulin_ch=tubulin_choice,
+            )
+
+            current_fov.segment_cells(celldiam=celldiam, nucdiam=nucdiam)
+            current_fov.run_detection(cell_diam=celldiam, nuc_diam=nucdiam)
+
+            _segres_rgb = current_fov._segmentation_result(
+                clip_low=(0.1, 0.1, 0.1), clip_high=(99.9, 99.9, 99.9)
+            )
+            _segres_rgb = np.uint8(_segres_rgb * 255)
+
+            imwrite(
+                str(cpindir / f"{current_fname.stem}.tif"),
+                current_fov.cp_input,
+            )
+            cv2.imwrite(
+                str(segdir / f"{current_fname.stem}.png"),
+                _segres_rgb[:, :, ::-1],
+            )
+
+            yield i
+
+    def _run_batch_analysis(self):
+        return None
+
+    def _update_batch_progbar(self, i):
+        self.batch_progbar.setValue(i)
+
+    def _batch_seg_finished(self):
+        self.run_batch_seg_btn.setText("Run batch segmentation")
+
 
 class GalleryWidget(QWidget):
     def __init__(self, napari_viewer):
@@ -382,11 +485,14 @@ class GalleryWidget(QWidget):
         gallery_path = WEA.gallery.__path__[0]
         input_dir = str(self.input_folder)
         port_number = 5050
-        _args = [gallery_path + "/app.py", "--port", f"{port_number:d}", input_dir]
-        print("running ", _args)
+        _args = [
+            gallery_path + "/app.py",
+            "--port",
+            f"{port_number:d}",
+            input_dir,
+        ]
 
         if self.p is None:
-            print("Starting gallery")
             self.p = QProcess()
             self.p.stateChanged.connect(self.handle_state)
             self.p.finished.connect(self.process_finished)
@@ -395,9 +501,9 @@ class GalleryWidget(QWidget):
 
     def handle_state(self, state):
         states = {
-            QProcess.NotRunning: 'Not running',
-            QProcess.Starting: 'Starting',
-            QProcess.Running: 'Running',
+            QProcess.NotRunning: "Not running",
+            QProcess.Starting: "Starting",
+            QProcess.Running: "Running",
         }
         state_name = states[state]
 
@@ -414,8 +520,9 @@ class GalleryWidget(QWidget):
         self.p = None
 
     def stop_gallery(self):
-        print("Terminating server...")
-        self.p.terminate()
+        if self.p is not None:
+            print("Terminating server...")
+            self.p.terminate()
 
 
 @napari_hook_implementation
