@@ -290,7 +290,7 @@ class WEAWidget(QWidget):
 
         # re-add image with the chosen channels
         self.viewer.add_image(
-            self.fov.data,
+            self.fov.data[:, :, tuple(choice_id)],
             channel_axis=-1,
             name=[f"{sorted_choice_str[i]}:{fname}" for i in choice_id],
             colormap=[cmaps[sorted_choice_str[i]] for i in choice_id],
@@ -506,13 +506,17 @@ class GalleryWidget(QWidget):
 
     def run_gallery(self):
         gallery_path = WEA.gallery.__path__[0]
+        
         input_dir = str(self.input_folder)
+        raw_dir = str(self.input_folder.parent / "cellpose_input")
+        
         port_number = 5050
         _args = [
             gallery_path + "/app.py",
             "--port",
             f"{port_number:d}",
             input_dir,
+            raw_dir
         ]
 
         if self.p is None:
