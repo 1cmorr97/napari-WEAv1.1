@@ -256,8 +256,9 @@ class WEAWidget(QWidget):
             tubulin_ch=tubulin_choice,
         )
 
-        choice_id = [cytoplasm_choice, nucleus_choice, tubulin_choice]
+        choice_id = [cytoplasm_choice, nucleus_choice, tubulin_choice]      
         choice_str = ["cyto", "dapi", "tubulin"]
+        sorted_choice_str = [choice_str[i] for i in choice_id]
         cmaps = {"cyto": "green", "dapi": "cyan", "tubulin": "magenta"}
 
         self.viewer.layers.clear()
@@ -269,8 +270,8 @@ class WEAWidget(QWidget):
         self.viewer.add_image(
             self.fov.data,
             channel_axis=-1,
-            name=[f"{choice_str[i]}:{fname}" for i in choice_id],
-            colormap=[cmaps[choice_str[i]] for i in choice_id],
+            name=[f"{sorted_choice_str[i]}:{fname}" for i in choice_id],
+            colormap=[cmaps[sorted_choice_str[i]] for i in choice_id],
         )
 
         # change contrast limit to 1-99% percentile
