@@ -34,6 +34,7 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from qtpy.QtCore import Qt
 from tifffile import imwrite
 
 FILE_FORMATS = ["*.mrc", "*.dv", "*.nd2", "*.tif", "*.tiff"]
@@ -47,6 +48,27 @@ def ch_from_text(s):
     substr = s.split(",")[0]
     chstr = substr.split("=")[1]
     return int(chstr)
+
+
+class InputFileList(QListWidget):
+    def __init__(self):
+        super().__init__()
+    
+    def keyPressEvent(self, e):      
+        if e.key() == Qt.Key_Delete:
+            current_index = self.currentRow()
+            self.takeItem(current_index)
+        
+        if e.key() == Qt.Key_Up:
+            current_index = self.currentRow()
+            moved_index = max(current_index - 1, 0)
+            self.setCurrentRow(moved_index)
+
+        if e.key() == Qt.Key_Down:
+            n_items = self.count()
+            current_index = self.currentRow()
+            moved_index = min(current_index + 1, n_items-1)
+            self.setCurrentRow(moved_index)
 
 
 class WEAWidget(QWidget):
@@ -75,7 +97,7 @@ class WEAWidget(QWidget):
         # file input interface
         self.choose_folder_btn = QPushButton("Choose a folder")
         self.current_folder_label = QLabel("")
-        self.flist_widget = QListWidget()
+        self.flist_widget = InputFileList()
         self.flist_groupbox = QGroupBox("Input files")
         self.flist_vbox = QVBoxLayout()
         self.flist_vbox.addWidget(self.choose_folder_btn)
