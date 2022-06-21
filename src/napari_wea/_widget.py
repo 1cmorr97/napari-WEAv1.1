@@ -9,6 +9,11 @@ Replace code below according to your needs.
 05/29/2022 - added widget access from console
             (see https://forum.image.sc/t/access-plugin-dockwidget-instance-through-console/64201/5)
 
+            from napari_wea._widget import WEAWidget
+
+            w = WEAWidget.instance()
+            # now you can access your current widget via variable 'w'
+
 """
 
 import webbrowser
@@ -33,6 +38,7 @@ from qtpy.QtWidgets import (
     QPushButton,
     QVBoxLayout,
     QWidget,
+    QCheckBox,
 )
 from qtpy.QtCore import Qt
 from tifffile import imwrite
@@ -53,12 +59,12 @@ def ch_from_text(s):
 class InputFileList(QListWidget):
     def __init__(self):
         super().__init__()
-    
-    def keyPressEvent(self, e):      
+
+    def keyPressEvent(self, e):
         if e.key() == Qt.Key_Delete:
             current_index = self.currentRow()
             self.takeItem(current_index)
-        
+
         if e.key() == Qt.Key_Up:
             current_index = self.currentRow()
             moved_index = max(current_index - 1, 0)
@@ -67,7 +73,7 @@ class InputFileList(QListWidget):
         if e.key() == Qt.Key_Down:
             n_items = self.count()
             current_index = self.currentRow()
-            moved_index = min(current_index + 1, n_items-1)
+            moved_index = min(current_index + 1, n_items - 1)
             self.setCurrentRow(moved_index)
 
 
@@ -112,6 +118,8 @@ class WEAWidget(QWidget):
         self.cytogroup = QComboBox(self)
         self.nucgroup = QComboBox(self)
         self.tubgroup = QComboBox(self)
+        self.do_maxproj_checkbox = QCheckBox("Use max-projection")
+        self.use_tubulin_for_cyto_checkbox = QCheckBox("Use tubulin as cyto")
         self.assign_channels_btn = QPushButton("Assign channels")
 
         self.ch_vbox.addWidget(QLabel("Cytoplasm channel"))
@@ -120,6 +128,8 @@ class WEAWidget(QWidget):
         self.ch_vbox.addWidget(self.nucgroup)
         self.ch_vbox.addWidget(QLabel("Tubulin channel"))
         self.ch_vbox.addWidget(self.tubgroup)
+        self.ch_vbox.addWidget(self.do_maxproj_checkbox)
+        self.ch_vbox.addWidget(self.use_tubulin_for_cyto_checkbox)
         self.ch_vbox.addWidget(self.assign_channels_btn)
         # set channel vbox (and its widgets) to channel groupbox
         self.ch_groupbox.setLayout(self.ch_vbox)
@@ -144,6 +154,7 @@ class WEAWidget(QWidget):
         self.nucleus_size_field.setValue(15.0)
         self.cell_size_field.setRange(1, 1000)
         self.nucleus_size_field.setRange(1, 1000)
+
         cyto_field_layout.addWidget(cyto_label)
         cyto_field_layout.addWidget(self.cell_size_field)
         nuc_field_layout.addWidget(nuc_label)
@@ -257,6 +268,11 @@ class WEAWidget(QWidget):
 
     def _assign_channels(self):
 
+        fileItem = self.flist_widget.currentItem()
+        fname = fileItem.text()
+
+        do_max_projection = self.do_maxproj_checkbox.isChecked()
+
         if self.current_img is None:
             return
 
@@ -266,7 +282,10 @@ class WEAWidget(QWidget):
 
         if self.current_img.data.ndim == 4:
             # reduce by finding focus in tubulin channel
-            img2d = self.current_img.get_focused_plane(tubulin_choice)
+            if do_max_projection:
+                img2d = self.current_img.max_project()
+            else:
+                img2d = self.current_img.get_focused_plane(tubulin_choice)
         else:
             img2d = self.current_img.data
 
@@ -278,22 +297,40 @@ class WEAWidget(QWidget):
             tubulin_ch=tubulin_choice,
         )
 
-        choice_id = [cytoplasm_choice, nucleus_choice, tubulin_choice]      
-        choice_str = ["cyto", "dapi", "tubulin"]
-        sorted_choice_str = [choice_str[i] for i in choice_id]
-        cmaps = {"cyto": "green", "dapi": "cyan", "tubulin": "magenta"}
+        use_tubulin_for_cyto = self.use_tubulin_for_cyto_checkbox.isChecked()
+
+        if use_tubulin_for_cyto:
+            self.fov._load_cellpose_model(
+                cyto_model_path=WEA.core.DEFAULT_TUBASCYTO_PATH
+            )
+
+        cmaps = {
+            "cyto": "green",
+            "dapi": "cyan",
+            "tubulin": "magenta",
+            "extra": "gray",
+        }
+
+        choice_dict = {
+            cytoplasm_choice: "cyto",
+            nucleus_choice: "dapi",
+            tubulin_choice: "tubulin",
+        }
+
+        # sort choice_dict by key to get corresponding channels in order 0,1,2
+        sorted_dict = dict(sorted(choice_dict.items()))
+        ch_names = [f"{s}:{fname}" for s in list(sorted_dict.values())]
+        ch_luts = [cmaps[s] for s in list(sorted_dict.values())]
 
         self.viewer.layers.clear()
 
-        fileItem = self.flist_widget.currentItem()
-        fname = fileItem.text()
-
         # re-add image with the chosen channels
+        ch_ids = tuple(sorted_dict.keys())
         self.viewer.add_image(
-            self.fov.data[:, :, tuple(choice_id)],
+            self.fov.data[:, :, ch_ids],
             channel_axis=-1,
-            name=[f"{sorted_choice_str[i]}:{fname}" for i in choice_id],
-            colormap=[cmaps[sorted_choice_str[i]] for i in choice_id],
+            name=ch_names,
+            colormap=ch_luts,
         )
 
         # change contrast limit to 1-99% percentile
@@ -351,8 +388,17 @@ class WEAWidget(QWidget):
 
     @thread_worker
     def __run_wea_task(self, celldiam, nucdiam):
-        self.fov.segment_cells(celldiam=celldiam, nucdiam=nucdiam)
-        self.fov.run_detection(cell_diam=celldiam, nuc_diam=nucdiam)
+        if self.use_tubulin_for_cyto_checkbox.isChecked():
+            cyto_channels = [1, 3]
+        else:
+            cyto_channels = [2, 3]
+
+        self.fov.segment_cells(
+            celldiam=celldiam, nucdiam=nucdiam, cytochs=cyto_channels
+        )
+        self.fov.run_detection(
+            cell_diam=celldiam, nuc_diam=nucdiam, cytochs=cyto_channels
+        )
         cellpose_output, woundedge = self.fov._detection_result()
         mtoc_df, cell_df = self.fov.run_analysis(
             self.current_img.filename.name
@@ -415,6 +461,9 @@ class WEAWidget(QWidget):
         cpindir.mkdir(exist_ok=True)
         segdir.mkdir(exist_ok=True)
 
+        do_max_projection = self.do_maxproj_checkbox.isChecked()
+        zreduce_method = "maxproj" if do_max_projection else "slice"
+
         for i in range(Nfiles):
 
             _item = self.flist_widget.item(i)
@@ -425,9 +474,14 @@ class WEAWidget(QWidget):
             # get the more convenient Path object for the filename
             current_fname = current_img.filename
 
+            fnout_prefix = f"{current_fname.stem}_{zreduce_method}"
+
             if current_img.data.ndim == 4:
                 # reduce by finding focus in tubulin channel
-                img2d = current_img.get_focused_plane(tubulin_choice)
+                if do_max_projection:
+                    img2d = current_img.max_project()
+                else:
+                    img2d = current_img.get_focused_plane(tubulin_choice)
             else:
                 img2d = current_img.data
 
@@ -448,11 +502,11 @@ class WEAWidget(QWidget):
             _segres_rgb = np.uint8(_segres_rgb * 255)
 
             imwrite(
-                str(cpindir / f"{current_fname.stem}.tif"),
+                str(cpindir / f"{fnout_prefix}.tif"),
                 current_fov.cp_input,
             )
             cv2.imwrite(
-                str(segdir / f"{current_fname.stem}.png"),
+                str(segdir / f"{fnout_prefix}.png"),
                 _segres_rgb[:, :, ::-1],
             )
 
@@ -506,17 +560,17 @@ class GalleryWidget(QWidget):
 
     def run_gallery(self):
         gallery_path = WEA.gallery.__path__[0]
-        
+
         input_dir = str(self.input_folder)
         raw_dir = str(self.input_folder.parent / "cellpose_input")
-        
+
         port_number = 5050
         _args = [
             gallery_path + "/app.py",
             "--port",
             f"{port_number:d}",
             input_dir,
-            raw_dir
+            raw_dir,
         ]
 
         if self.p is None:
