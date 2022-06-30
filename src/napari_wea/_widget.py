@@ -51,7 +51,7 @@ def argsort(seq):
 
 
 def ch_from_text(s):
-    substr = s.split(",")[0]
+    substr = s.split(":")[0]
     chstr = substr.split("=")[1]
     return int(chstr)
 
@@ -239,10 +239,12 @@ class WEAWidget(QWidget):
             fpath = self.img_folder / fname
             self.current_img = WEA.io.CanonizedImage(fpath)
 
-            current_nch = self.current_img.data.shape[-1]
+            channels = self.current_image.channels
 
             if current_nch != prev_nch:
-                ch_names = [f"ch={i}" for i in range(current_nch)]
+                ch_names = [
+                    f"ch={i:d}:{ch:s}" for i, ch in enumerate(channels)
+                ]
 
                 self.viewer.add_image(
                     self.current_img.data, name=ch_names, channel_axis=-1
