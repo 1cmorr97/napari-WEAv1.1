@@ -239,7 +239,8 @@ class WEAWidget(QWidget):
             fpath = self.img_folder / fname
             self.current_img = WEA.io.CanonizedImage(fpath)
 
-            channels = self.current_image.channels
+            channels = self.current_img.channels
+            current_nch = len(channels)
 
             if current_nch != prev_nch:
                 ch_names = [
