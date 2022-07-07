@@ -338,8 +338,8 @@ class WEAWidget(QWidget):
 
         # change contrast limit to 1-99% percentile
         for layer in self.viewer.layers:
-            lo = np.percentile(layer.data, 0.5)
-            hi = np.percentile(layer.data, 99.5)
+            lo = np.percentile(layer.data, 0.1)
+            hi = np.percentile(layer.data, 99.9)
             layer.contrast_limits = [lo, hi]
 
     def _sketch_cell(self):
