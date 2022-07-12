@@ -159,10 +159,24 @@ class WEAWidget(QWidget):
         cyto_field_layout.addWidget(self.cell_size_field)
         nuc_field_layout.addWidget(nuc_label)
         nuc_field_layout.addWidget(self.nucleus_size_field)
+
+        # add option to enforce pixel size
+        px_size_widget = QWidget()
+        px_size_layout = QHBoxLayout()
+        px_size_widget.setLayout(px_size_layout)
+        self.enforce_px_size_checkbox = QCheckBox("Force pixel size")
+        # set pixel size entry form (adaptive step type is 0.1 of current value, int = 1)
+        self.px_size_entry = QDoubleSpinBox(decimals=5, stepType=1)
+        self.px_size_label = QLabel("um/px")
+        px_size_layout.addWidget(self.px_size_entry)
+        px_size_layout.addWidget(self.px_size_label)
+
         self.sketch_cell_size = QPushButton("Sketch sizes")
         self.run_singlerun_btn = QPushButton("Do it!")
         self.wea_vbox.addWidget(cyto_field_widget)
         self.wea_vbox.addWidget(nuc_field_widget)
+        self.wea_vbox.addWidget(self.enforce_px_size_checkbox)
+        self.wea_vbox.addWidget(px_size_widget)
         self.wea_vbox.addWidget(self.sketch_cell_size)
         self.wea_vbox.addWidget(self.run_singlerun_btn)
         self.wea_groupbox.setLayout(self.wea_vbox)
@@ -269,6 +283,9 @@ class WEAWidget(QWidget):
                     self.current_img.data, name=prev_chnames, channel_axis=-1
                 )
 
+            # retrieve pixel size information if available (and display in GUI)
+            self.px_size_entry.setValue(self.current_img.dxy)
+
     def _assign_channels(self):
 
         fileItem = self.flist_widget.currentItem()
@@ -292,9 +309,16 @@ class WEAWidget(QWidget):
         else:
             img2d = self.current_img.data
 
+        force_pixel_size = self.enforce_px_size_checkbox.isChecked()
+
+        if force_pixel_size:
+            dxy = self.px_size_entry.value()
+        else:
+            dxy = self.current_img.dxy
+
         self.fov = WEA.core.ImageField(
             img2d,
-            self.current_img.dxy,
+            dxy,
             nucleus_ch=nucleus_choice,
             cyto_channel=cytoplasm_choice,
             tubulin_ch=tubulin_choice,
@@ -352,8 +376,8 @@ class WEAWidget(QWidget):
 
         Ny, Nx = self.current_img.data.shape[:2]
         imgcenter = (Ny // 2, Nx // 2)
-        cellrad_px = 0.5 * cell_diam / self.current_img.dxy
-        nucrad_px = 0.5 * nuc_diam / self.current_img.dxy
+        cellrad_px = 0.5 * cell_diam / self.fov.dxy
+        nucrad_px = 0.5 * nuc_diam / self.fov.dxy
         sketch_data = [
             np.array([imgcenter, (cellrad_px, cellrad_px)]),
             np.array([imgcenter, (nucrad_px, nucrad_px)]),
