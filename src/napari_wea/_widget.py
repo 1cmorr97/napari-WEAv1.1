@@ -18,10 +18,9 @@ Replace code below according to your needs.
 
 import webbrowser
 from pathlib import Path
-
 import cv2
-import numpy as np
 import WEA
+import numpy as np
 from napari.qt.threading import thread_worker
 from napari_plugin_engine import napari_hook_implementation
 from qtpy.QtCore import QProcess
@@ -122,6 +121,17 @@ class WEAWidget(QWidget):
         self.use_tubulin_for_cyto_checkbox = QCheckBox("Use tubulin as cyto")
         self.assign_channels_btn = QPushButton("Assign channels")
 
+        # add option to enforce pixel size
+        px_size_widget = QWidget()
+        px_size_layout = QHBoxLayout()
+        px_size_widget.setLayout(px_size_layout)
+        self.enforce_px_size_checkbox = QCheckBox("Force pixel size")
+        # set pixel size entry form (adaptive step type is 0.1 of current value, int = 1)
+        self.px_size_entry = QDoubleSpinBox(decimals=5, stepType=1)
+        self.px_size_label = QLabel("um/px")
+        px_size_layout.addWidget(self.px_size_entry)
+        px_size_layout.addWidget(self.px_size_label)
+
         self.ch_vbox.addWidget(QLabel("Cytoplasm channel"))
         self.ch_vbox.addWidget(self.cytogroup)
         self.ch_vbox.addWidget(QLabel("Nucleus channel"))
@@ -130,7 +140,10 @@ class WEAWidget(QWidget):
         self.ch_vbox.addWidget(self.tubgroup)
         self.ch_vbox.addWidget(self.do_maxproj_checkbox)
         self.ch_vbox.addWidget(self.use_tubulin_for_cyto_checkbox)
+        self.ch_vbox.addWidget(self.enforce_px_size_checkbox)
+        self.ch_vbox.addWidget(px_size_widget)
         self.ch_vbox.addWidget(self.assign_channels_btn)
+
         # set channel vbox (and its widgets) to channel groupbox
         self.ch_groupbox.setLayout(self.ch_vbox)
         self.layout.addWidget(self.ch_groupbox)
@@ -160,23 +173,10 @@ class WEAWidget(QWidget):
         nuc_field_layout.addWidget(nuc_label)
         nuc_field_layout.addWidget(self.nucleus_size_field)
 
-        # add option to enforce pixel size
-        px_size_widget = QWidget()
-        px_size_layout = QHBoxLayout()
-        px_size_widget.setLayout(px_size_layout)
-        self.enforce_px_size_checkbox = QCheckBox("Force pixel size")
-        # set pixel size entry form (adaptive step type is 0.1 of current value, int = 1)
-        self.px_size_entry = QDoubleSpinBox(decimals=5, stepType=1)
-        self.px_size_label = QLabel("um/px")
-        px_size_layout.addWidget(self.px_size_entry)
-        px_size_layout.addWidget(self.px_size_label)
-
         self.sketch_cell_size = QPushButton("Sketch sizes")
         self.run_singlerun_btn = QPushButton("Do it!")
         self.wea_vbox.addWidget(cyto_field_widget)
         self.wea_vbox.addWidget(nuc_field_widget)
-        self.wea_vbox.addWidget(self.enforce_px_size_checkbox)
-        self.wea_vbox.addWidget(px_size_widget)
         self.wea_vbox.addWidget(self.sketch_cell_size)
         self.wea_vbox.addWidget(self.run_singlerun_btn)
         self.wea_groupbox.setLayout(self.wea_vbox)
@@ -283,8 +283,10 @@ class WEAWidget(QWidget):
                     self.current_img.data, name=prev_chnames, channel_axis=-1
                 )
 
-            # retrieve pixel size information if available (and display in GUI)
-            self.px_size_entry.setValue(self.current_img.dxy)
+            # if we dont enforce pixel size
+            # retrieve pixel size information if available and display in GUI
+            if not self.enforce_px_size_checkbox.isChecked():
+                self.px_size_entry.setValue(self.current_img.dxy)
 
     def _assign_channels(self):
 
