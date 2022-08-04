@@ -432,6 +432,14 @@ class WEAWidget(QWidget):
         mtoc_df, cell_df = self.fov.run_analysis(
             self.current_img.filename.name
         )
+        
+        # write csv file output
+        csv_out_path = self.current_img.filename.parent
+        fprefix = self.current_img.filename.stem
+        
+        mtoc_df.to_csv(csv_out_path / f"{fprefix}_mtoc.csv", index=False)
+        cell_df.to_csv(csv_out_path / f"{fprefix}_props.csv", index=False)
+
         self.run_singlerun_btn.setText("Analyzing ...")
         return {
             "labcells": cellpose_output,
@@ -493,6 +501,15 @@ class WEAWidget(QWidget):
         do_max_projection = self.do_maxproj_checkbox.isChecked()
         zreduce_method = "maxproj" if do_max_projection else "slice"
 
+        # check if pixel size is forced
+        force_pixel_size = self.enforce_px_size_checkbox.isChecked()
+
+        if force_pixel_size:
+            dxy = self.px_size_entry.value()
+        else:
+            dxy = self.current_img.dxy
+
+
         for i in range(Nfiles):
 
             _item = self.flist_widget.item(i)
@@ -516,7 +533,7 @@ class WEAWidget(QWidget):
 
             current_fov = WEA.core.ImageField(
                 img2d,
-                current_img.dxy,
+                dxy,
                 nucleus_ch=nucleus_choice,
                 cyto_channel=cytoplasm_choice,
                 tubulin_ch=tubulin_choice,
