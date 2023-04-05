@@ -428,7 +428,7 @@ class WEAWidget(QWidget):
         self.fov.run_detection(
             cell_diam=celldiam, nuc_diam=nucdiam, cytochs=cyto_channels
         )
-        cellpose_output, woundedge = self.fov._detection_result()
+        cellpose_output, cellpose_nucleus, woundedge = self.fov._detection_result()
         mtoc_df, cell_df = self.fov.run_analysis(
             self.current_img.filename.name
         )
@@ -443,6 +443,7 @@ class WEAWidget(QWidget):
         self.run_singlerun_btn.setText("Analyzing ...")
         return {
             "labcells": cellpose_output,
+            "labnucs": cellpose_nucleus,
             "woundedge": woundedge,
             "mtoc_df": mtoc_df,
             "cell_df": cell_df,
@@ -457,6 +458,7 @@ class WEAWidget(QWidget):
     def __display_result(self, segresult):
 
         self.viewer.add_labels(segresult["labcells"], name="detected cells")
+        self.viewer.add_labels(segresult["labnucs"], name="detected nuclei")
         self.viewer.add_labels(
             segresult["woundedge"],
             name="wound edge",
