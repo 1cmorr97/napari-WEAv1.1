@@ -175,10 +175,14 @@ class WEAWidget(QWidget):
 
         self.sketch_cell_size = QPushButton("Sketch sizes")
         self.run_singlerun_btn = QPushButton("Do it!")
+        self.apply_manual_changes_btn = QPushButton("apply changes")
+
         self.wea_vbox.addWidget(cyto_field_widget)
         self.wea_vbox.addWidget(nuc_field_widget)
         self.wea_vbox.addWidget(self.sketch_cell_size)
         self.wea_vbox.addWidget(self.run_singlerun_btn)
+        self.wea_vbox.addWidget(self.apply_manual_changes_btn)
+
         self.wea_groupbox.setLayout(self.wea_vbox)
         self.layout.addWidget(self.wea_groupbox)
 
@@ -206,6 +210,8 @@ class WEAWidget(QWidget):
         self.run_singlerun_btn.clicked.connect(self._run_wea_single)
         self.run_batch_seg_btn.clicked.connect(self._run_batch_segmentation)
         self.run_batch_analysis.clicked.connect(self._run_batch_analysis)
+        self.apply_manual_changes_btn.clicked.connect(self._apply_manual_changes)
+
 
     @classmethod
     def instance(cls):
@@ -430,7 +436,7 @@ class WEAWidget(QWidget):
         )
         cellpose_output, cellpose_nucleus, woundedge = self.fov._detection_result()
         mtoc_df, cell_df = self.fov.run_analysis(
-            self.current_img.filename.name
+            self.current_img.filename.name, nuc_diam=nucdiam
         )
         
         # write csv file output
@@ -568,6 +574,75 @@ class WEAWidget(QWidget):
 
     def _batch_seg_finished(self):
         self.run_batch_seg_btn.setText("Run batch segmentation")
+
+    def _apply_manual_changes(self):
+
+        # fetch updated 'detected cells' layer
+        detected_cells = self.viewer.layers['detected cells'].data
+        detected_nuclei = self.viewer.layers['detected nuclei'].data
+
+        # redefine cells vs non-cells & recompute woundedge
+        cellarea = WEA.core.binary_fill_holes(detected_cells > 0)
+        woundarea = ~cellarea
+        woundedge = WEA.core.find_boundaries(woundarea, mode="thick")
+
+        # now remove cells that are touching the border (we dont want to analyze them)
+        detected_cells = WEA.core.clear_border(detected_cells)
+
+        self.viewer.add_labels(
+            woundedge,
+            name="new wound edge",
+            num_colors=1,
+            color={1: "red"},
+        )
+
+        # get label ids for cells at the edge
+        woundcells = detected_cells * woundedge
+        edge_ids = np.delete(np.unique(woundcells), 0)
+
+        migration_axes = []
+
+        # recompute migration axes
+        for edge_id in edge_ids:
+            _wound = woundcells == edge_id
+            _cell = detected_cells == edge_id
+            _nuclei = detected_nuclei == edge_id
+            # get nucleus centroid
+            nucprops = WEA.core.regionprops(np.uint8(_nuclei))
+            nucy, nucx = nucprops[0].centroid
+            # get wound edge endpoints
+            single_edge, edge_endpts = WEA.core.trim_skeleton_to_endpoints(
+                _wound
+            )
+            # compute migration axis
+            sortededge = WEA.core.sort_edge_coords(single_edge, edge_endpts[0])
+            _dy = sortededge[:, 0] - nucy
+            _dx = sortededge[:, 1] - nucx
+            distweights = np.sqrt(_dy * _dy + _dx * _dx)
+            normweights = distweights / distweights.sum()
+            maxis_index = int(
+                np.sum(np.arange(distweights.size) * normweights)
+            )
+            my, mx = sortededge[maxis_index, :]
+            migration_axes.append(
+                [[nucy, nucx], [my, mx]]
+            )
+
+            # form convex hull of the cell "front"
+            _img = single_edge
+            _img[int(nucy), int(nucx)] = True
+            cone = WEA.core.convex_hull_image(_img)
+
+
+        self.viewer.add_shapes(
+            migration_axes,
+            shape_type="line",
+            name="new migration axis",
+            edge_width=5,
+            edge_color="red",
+            face_color="red",
+    )
+
 
 
 class GalleryWidget(QWidget):

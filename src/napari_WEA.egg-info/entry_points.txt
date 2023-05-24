@@ -1,0 +1,2 @@
+[napari.manifest]
+napari-WEA = napari_wea:napari.yaml
