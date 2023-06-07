@@ -3,13 +3,8 @@ display_name: Wound Edge Analysis
 contributions:
   commands:
     - id: napari-WEA.make_analysis_widget
-      title: Wound Analysis command
       python_name: napari_wea._widget:WEAWidget
-    - id: napari-WEA.make_gallery_widget
-      title: Image Gallery command
-      python_name: napari_wea._widget:GalleryWidget
+      title: napari-WEA widget
   widgets:
     - command: napari-WEA.make_analysis_widget
-      display_name: Wound Analysis Widget
-    - command: napari-WEA.make_gallery_widget
-      display_name: Image Gallery Widget
+      display_name: napari-WEA widget

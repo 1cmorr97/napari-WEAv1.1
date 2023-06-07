@@ -16,10 +16,9 @@ Replace code below according to your needs.
 
 """
 
-import webbrowser
 from pathlib import Path
 import cv2
-import WEA
+import WoundRUs
 import numpy as np
 from napari.qt.threading import thread_worker
 from napari_plugin_engine import napari_hook_implementation
@@ -86,15 +85,13 @@ class WEAWidget(QWidget):
     # 2. use a type annotation of 'napari.viewer.Viewer' for any parameter
 
     def __init__(self, napari_viewer):
-
         super().__init__()
 
         WEAWidget._instance = self
 
         self.viewer = napari_viewer
-
         self.current_img = None
-        self.fov = None
+        self.current_img_metadata = None
 
         # main layout
         self.layout = QVBoxLayout()
@@ -157,14 +154,14 @@ class WEAWidget(QWidget):
         cyto_field_layout = QHBoxLayout()
         nuc_field_widget.setLayout(nuc_field_layout)
         cyto_field_widget.setLayout(cyto_field_layout)
-        nuc_label = QLabel("Nucleus diam. (µm)")
-        cyto_label = QLabel("Cell diam. (µm)")
+        nuc_label = QLabel("Nucleus diam. (px)")
+        cyto_label = QLabel("Cell diam. (px)")
         self.cell_size_field = QDoubleSpinBox()
         # set default values for cell size
-        self.cell_size_field.setValue(75.0)
+        self.cell_size_field.setValue(100.0)
         self.nucleus_size_field = QDoubleSpinBox()
         # set default value for nucleus size
-        self.nucleus_size_field.setValue(15.0)
+        self.nucleus_size_field.setValue(30.0)
         self.cell_size_field.setRange(1, 1000)
         self.nucleus_size_field.setRange(1, 1000)
 
@@ -174,29 +171,17 @@ class WEAWidget(QWidget):
         nuc_field_layout.addWidget(self.nucleus_size_field)
 
         self.sketch_cell_size = QPushButton("Sketch sizes")
-        self.run_singlerun_btn = QPushButton("Do it!")
+        self.process_image_btn = QPushButton("Process image")
         self.apply_manual_changes_btn = QPushButton("apply changes")
 
         self.wea_vbox.addWidget(cyto_field_widget)
         self.wea_vbox.addWidget(nuc_field_widget)
         self.wea_vbox.addWidget(self.sketch_cell_size)
-        self.wea_vbox.addWidget(self.run_singlerun_btn)
+        self.wea_vbox.addWidget(self.process_image_btn)
         self.wea_vbox.addWidget(self.apply_manual_changes_btn)
 
         self.wea_groupbox.setLayout(self.wea_vbox)
         self.layout.addWidget(self.wea_groupbox)
-
-        # batch processing interface
-        self.batch_groupbox = QGroupBox("Batch processing")
-        self.batch_vbox = QVBoxLayout()
-        self.batch_progbar = QProgressBar()
-        self.run_batch_seg_btn = QPushButton("Run batch segmentation")
-        self.run_batch_analysis = QPushButton("Run batch analysis")
-        self.batch_vbox.addWidget(self.batch_progbar)
-        self.batch_vbox.addWidget(self.run_batch_seg_btn)
-        self.batch_vbox.addWidget(self.run_batch_analysis)
-        self.batch_groupbox.setLayout(self.batch_vbox)
-        self.layout.addWidget(self.batch_groupbox)
 
         # fill the rest of the vertical space so preceding widgets stack
         # from top-to-bottom
@@ -207,11 +192,10 @@ class WEAWidget(QWidget):
         self.choose_folder_btn.clicked.connect(self._open_file_dialog)
         self.assign_channels_btn.clicked.connect(self._assign_channels)
         self.sketch_cell_size.clicked.connect(self._sketch_cell)
-        self.run_singlerun_btn.clicked.connect(self._run_wea_single)
-        self.run_batch_seg_btn.clicked.connect(self._run_batch_segmentation)
-        self.run_batch_analysis.clicked.connect(self._run_batch_analysis)
-        self.apply_manual_changes_btn.clicked.connect(self._apply_manual_changes)
-
+        self.process_image_btn.clicked.connect(self._process_image)
+        self.apply_manual_changes_btn.clicked.connect(
+            self._apply_manual_changes
+        )
 
     @classmethod
     def instance(cls):
@@ -219,7 +203,6 @@ class WEAWidget(QWidget):
         return cls._instance
 
     def _open_file_dialog(self):
-
         self.img_folder = Path(
             QFileDialog.getExistingDirectory(self, "Choose a folder", "~")
         )
@@ -236,6 +219,7 @@ class WEAWidget(QWidget):
             flist.extend([f for f in imgpath.glob(ext)])
 
         nfiles = len(flist)
+
         # construct abbreviated path
         abbr_path = f"...{self.img_folder.parent.name}/{self.img_folder.name}"
         # update current folder label
@@ -257,18 +241,19 @@ class WEAWidget(QWidget):
         if key:
             fname = key.text()
             fpath = self.img_folder / fname
-            self.current_img = WEA.io.CanonizedImage(fpath)
+            (
+                self.current_img,
+                self.current_img_metadata,
+            ) = WoundRUs.IO.read_image(fpath)
 
-            channels = self.current_img.channels
+            channels = metadata["channels"]
             current_nch = len(channels)
 
             if current_nch != prev_nch:
-                ch_names = [
-                    f"ch={i:d}:{ch:s}" for i, ch in enumerate(channels)
-                ]
+                ch_names = [f"ch={i:d}:{ch:s}" for i, ch in enumerate(channels)]
 
                 self.viewer.add_image(
-                    self.current_img.data, name=ch_names, channel_axis=-1
+                    self.current_img, name=ch_names, channel_axis=-1
                 )
 
                 # update the channel groupboxes
@@ -286,16 +271,15 @@ class WEAWidget(QWidget):
 
             else:
                 self.viewer.add_image(
-                    self.current_img.data, name=prev_chnames, channel_axis=-1
+                    self.current_img, name=prev_chnames, channel_axis=-1
                 )
 
             # if we dont enforce pixel size
             # retrieve pixel size information if available and display in GUI
             if not self.enforce_px_size_checkbox.isChecked():
-                self.px_size_entry.setValue(self.current_img.dxy)
+                self.px_size_entry.setValue(self.metadata["pixel_size"])
 
     def _assign_channels(self):
-
         fileItem = self.flist_widget.currentItem()
         fname = fileItem.text()
 
@@ -308,36 +292,25 @@ class WEAWidget(QWidget):
         nucleus_choice = ch_from_text(self.nucgroup.currentText())
         tubulin_choice = ch_from_text(self.tubgroup.currentText())
 
-        if self.current_img.data.ndim == 4:
+        if self.current_img.ndim == 4:
             # reduce by finding focus in tubulin channel
             if do_max_projection:
-                img2d = self.current_img.max_project()
+                # do max projection
+                NotImplementedError("reduction from 3D to 2D not implemented.")
             else:
-                img2d = self.current_img.get_focused_plane(tubulin_choice)
+                # find focused plane
+                NotImplementedError("reduction from 3D to 2D not implemented.")
         else:
-            img2d = self.current_img.data
+            img2d = self.current_img
 
         force_pixel_size = self.enforce_px_size_checkbox.isChecked()
 
         if force_pixel_size:
             dxy = self.px_size_entry.value()
         else:
-            dxy = self.current_img.dxy
-
-        self.fov = WEA.core.ImageField(
-            img2d,
-            dxy,
-            nucleus_ch=nucleus_choice,
-            cyto_channel=cytoplasm_choice,
-            tubulin_ch=tubulin_choice,
-        )
+            dxy = self.metadata["pixel_size"]
 
         use_tubulin_for_cyto = self.use_tubulin_for_cyto_checkbox.isChecked()
-
-        if use_tubulin_for_cyto:
-            self.fov._load_cellpose_model(
-                cyto_model_path=WEA.core.DEFAULT_TUBASCYTO_PATH
-            )
 
         cmaps = {
             "cyto": "green",
@@ -362,7 +335,7 @@ class WEAWidget(QWidget):
         # re-add image with the chosen channels
         ch_ids = tuple(sorted_dict.keys())
         self.viewer.add_image(
-            self.fov.data[:, :, ch_ids],
+            img2d[:, :, ch_ids],
             channel_axis=-1,
             name=ch_names,
             colormap=ch_luts,
@@ -370,12 +343,11 @@ class WEAWidget(QWidget):
 
         # change contrast limit to 1-99% percentile
         for layer in self.viewer.layers:
-            lo = np.percentile(layer.data, 0.1)
-            hi = np.percentile(layer.data, 99.9)
+            lo = np.percentile(layer.data, 0.5)
+            hi = np.percentile(layer.data, 99.5)
             layer.contrast_limits = [lo, hi]
 
     def _sketch_cell(self):
-
         if self.current_img is None:
             return
 
@@ -407,19 +379,17 @@ class WEAWidget(QWidget):
             )
 
     def _run_wea_single(self):
-
-        if self.fov is None:
-            return
-
         celldiam = self.cell_size_field.value()
         nucdiam = self.nucleus_size_field.value()
 
-        if self.fov:
-            self.run_singlerun_btn.setText("Segmenting ...")
-            worker = self.__run_wea_task(celldiam, nucdiam)
-            worker.returned.connect(self.__display_result)
-            worker.finished.connect(self.__change_run_btn_status)
-            worker.start()
+        if self.current_img:
+            pass
+        # if self.fov:
+        #     self.run_singlerun_btn.setText("Segmenting ...")
+        #     worker = self.__run_wea_task(celldiam, nucdiam)
+        #     worker.returned.connect(self.__display_result)
+        #     worker.finished.connect(self.__change_run_btn_status)
+        #     worker.start()
 
     @thread_worker
     def __run_wea_task(self, celldiam, nucdiam):
@@ -428,32 +398,37 @@ class WEAWidget(QWidget):
         else:
             cyto_channels = [2, 3]
 
-        self.fov.segment_cells(
-            celldiam=celldiam, nucdiam=nucdiam, cytochs=cyto_channels
-        )
-        self.fov.run_detection(
-            cell_diam=celldiam, nuc_diam=nucdiam, cytochs=cyto_channels
-        )
-        cellpose_output, cellpose_nucleus, woundedge = self.fov._detection_result()
-        mtoc_df, cell_df = self.fov.run_analysis(
-            self.current_img.filename.name, nuc_diam=nucdiam
-        )
-        
-        # write csv file output
-        csv_out_path = self.current_img.filename.parent
-        fprefix = self.current_img.filename.stem
-        
-        mtoc_df.to_csv(csv_out_path / f"{fprefix}_mtoc.csv", index=False)
-        cell_df.to_csv(csv_out_path / f"{fprefix}_props.csv", index=False)
+        pass
+        # self.fov.segment_cells(
+        #     celldiam=celldiam, nucdiam=nucdiam, cytochs=cyto_channels
+        # )
+        # self.fov.run_detection(
+        #     cell_diam=celldiam, nuc_diam=nucdiam, cytochs=cyto_channels
+        # )
+        # (
+        #     cellpose_output,
+        #     cellpose_nucleus,
+        #     woundedge,
+        # ) = self.fov._detection_result()
+        # mtoc_df, cell_df = self.fov.run_analysis(
+        #     self.current_img.filename.name, nuc_diam=nucdiam
+        # )
 
-        self.run_singlerun_btn.setText("Analyzing ...")
-        return {
-            "labcells": cellpose_output,
-            "labnucs": cellpose_nucleus,
-            "woundedge": woundedge,
-            "mtoc_df": mtoc_df,
-            "cell_df": cell_df,
-        }
+        # # write csv file output
+        # csv_out_path = self.current_img.filename.parent
+        # fprefix = self.current_img.filename.stem
+
+        # mtoc_df.to_csv(csv_out_path / f"{fprefix}_mtoc.csv", index=False)
+        # cell_df.to_csv(csv_out_path / f"{fprefix}_props.csv", index=False)
+
+        # self.run_singlerun_btn.setText("Analyzing ...")
+        # return {
+        #     "labcells": cellpose_output,
+        #     "labnucs": cellpose_nucleus,
+        #     "woundedge": woundedge,
+        #     "mtoc_df": mtoc_df,
+        #     "cell_df": cell_df,
+        # }
 
     def __check_args(*args):
         print(args)
@@ -462,7 +437,6 @@ class WEAWidget(QWidget):
         self.run_singlerun_btn.setText("Do it!")
 
     def __display_result(self, segresult):
-
         self.viewer.add_labels(segresult["labcells"], name="detected cells")
         self.viewer.add_labels(segresult["labnucs"], name="detected nuclei")
         self.viewer.add_labels(
@@ -517,9 +491,7 @@ class WEAWidget(QWidget):
         else:
             dxy = self.current_img.dxy
 
-
         for i in range(Nfiles):
-
             _item = self.flist_widget.item(i)
             fname = _item.text()
 
@@ -576,160 +548,12 @@ class WEAWidget(QWidget):
         self.run_batch_seg_btn.setText("Run batch segmentation")
 
     def _apply_manual_changes(self):
-
-        # fetch updated 'detected cells' layer
-        detected_cells = self.viewer.layers['detected cells'].data
-        detected_nuclei = self.viewer.layers['detected nuclei'].data
-
-        # redefine cells vs non-cells & recompute woundedge
-        cellarea = WEA.core.binary_fill_holes(detected_cells > 0)
-        woundarea = ~cellarea
-        woundedge = WEA.core.find_boundaries(woundarea, mode="thick")
-
-        # now remove cells that are touching the border (we dont want to analyze them)
-        detected_cells = WEA.core.clear_border(detected_cells)
-
-        self.viewer.add_labels(
-            woundedge,
-            name="new wound edge",
-            num_colors=1,
-            color={1: "red"},
-        )
-
-        # get label ids for cells at the edge
-        woundcells = detected_cells * woundedge
-        edge_ids = np.delete(np.unique(woundcells), 0)
-
-        migration_axes = []
-
-        # recompute migration axes
-        for edge_id in edge_ids:
-            _wound = woundcells == edge_id
-            _cell = detected_cells == edge_id
-            _nuclei = detected_nuclei == edge_id
-            # get nucleus centroid
-            nucprops = WEA.core.regionprops(np.uint8(_nuclei))
-            nucy, nucx = nucprops[0].centroid
-            # get wound edge endpoints
-            single_edge, edge_endpts = WEA.core.trim_skeleton_to_endpoints(
-                _wound
-            )
-            # compute migration axis
-            sortededge = WEA.core.sort_edge_coords(single_edge, edge_endpts[0])
-            _dy = sortededge[:, 0] - nucy
-            _dx = sortededge[:, 1] - nucx
-            distweights = np.sqrt(_dy * _dy + _dx * _dx)
-            normweights = distweights / distweights.sum()
-            maxis_index = int(
-                np.sum(np.arange(distweights.size) * normweights)
-            )
-            my, mx = sortededge[maxis_index, :]
-            migration_axes.append(
-                [[nucy, nucx], [my, mx]]
-            )
-
-            # form convex hull of the cell "front"
-            _img = single_edge
-            _img[int(nucy), int(nucx)] = True
-            cone = WEA.core.convex_hull_image(_img)
-
-
-        self.viewer.add_shapes(
-            migration_axes,
-            shape_type="line",
-            name="new migration axis",
-            edge_width=5,
-            edge_color="red",
-            face_color="red",
-    )
-
-
-
-class GalleryWidget(QWidget):
-    def __init__(self, napari_viewer):
-        super().__init__()
-
-        self.p = None
-
-        self.layout = QVBoxLayout()
-        self.choose_folder_btn = QPushButton("Choose a folder")
-        self.input_folder_edit = QLineEdit()
-        self.run_gallery_btn = QPushButton("Run gallery server")
-        self.stop_gallery_btn = QPushButton("Stop gallery server")
-        self.server_status = QLabel("Status : ")
-
-        self.layout.addWidget(self.choose_folder_btn)
-        self.layout.addWidget(self.input_folder_edit)
-        self.layout.addWidget(self.run_gallery_btn)
-        self.layout.addWidget(self.stop_gallery_btn)
-        self.layout.addWidget(self.server_status)
-
-        self.setLayout(self.layout)
-        self.layout.addStretch()
-
-        self.choose_folder_btn.clicked.connect(self.choose_folder)
-        self.run_gallery_btn.clicked.connect(self.run_gallery)
-        self.stop_gallery_btn.clicked.connect(self.stop_gallery)
-
-    def choose_folder(self):
-        self.input_folder = Path(
-            QFileDialog.getExistingDirectory(
-                self, "Choose a folder", "~", QFileDialog.ShowDirsOnly
-            )
-        )
-
-        if self.input_folder:
-            self.input_folder_edit.setText(str(self.input_folder))
-
-    def run_gallery(self):
-        gallery_path = WEA.gallery.__path__[0]
-
-        input_dir = str(self.input_folder)
-        raw_dir = str(self.input_folder.parent / "cellpose_input")
-
-        port_number = 5050
-        _args = [
-            gallery_path + "/app.py",
-            "--port",
-            f"{port_number:d}",
-            input_dir,
-            raw_dir,
-        ]
-
-        if self.p is None:
-            self.p = QProcess()
-            self.p.stateChanged.connect(self.handle_state)
-            self.p.finished.connect(self.process_finished)
-            self.p.start("python", _args)
-            webbrowser.open(f"http://127.0.0.1:{port_number}", new=2)
-
-    def handle_state(self, state):
-        states = {
-            QProcess.NotRunning: "Not running",
-            QProcess.Starting: "Starting",
-            QProcess.Running: "Running",
-        }
-        state_name = states[state]
-
-        if state_name == "Running":
-            self.server_status.setText("Status : running")
-            self.server_status.setStyleSheet("background-color: green;")
-        if state_name == "Not running":
-            self.server_status.setText("Status : not running")
-            self.server_status.setStyleSheet("")
-
-        print("Gallery state: ", state_name)
-
-    def process_finished(self):
-        self.p = None
-
-    def stop_gallery(self):
-        if self.p is not None:
-            print("Terminating server...")
-            self.p.terminate()
+        pass
 
 
 @napari_hook_implementation
 def napari_experimental_provide_dock_widget():
     # you can return either a single widget, or a sequence of widgets
-    return [WEAWidget, GalleryWidget]
+    return [
+        WEAWidget,
+    ]
