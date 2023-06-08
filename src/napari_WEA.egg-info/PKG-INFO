@@ -1,6 +1,6 @@
 Metadata-Version: 2.1
 Name: napari-WEA
-Version: 0.0.1
+Version: 0.0.2
 Summary: cellpose-based plugin for wound edge analysis
 Author: Daniel Elnatan
 Author-email: delnatan@ucdavis.edu

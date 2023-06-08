@@ -6,7 +6,7 @@ pandas
 matplotlib
 scipy
 numpy
-WEA
+WoundRUs
 magicgui
 qtpy
 

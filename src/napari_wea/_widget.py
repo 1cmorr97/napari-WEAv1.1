@@ -92,6 +92,9 @@ class WEAWidget(QWidget):
         self.viewer = napari_viewer
         self.current_img = None
         self.current_img_metadata = None
+        self.current_filename = None
+        # img2d is the composite image
+        self.img2d = None
 
         # main layout
         self.layout = QVBoxLayout()
@@ -107,6 +110,9 @@ class WEAWidget(QWidget):
         self.flist_vbox.addWidget(self.flist_widget)
         self.flist_groupbox.setLayout(self.flist_vbox)
         self.layout.addWidget(self.flist_groupbox)
+
+        self.compute_label_increment_btn = QPushButton("Get unique label")
+        self.layout.addWidget(self.compute_label_increment_btn)
 
         # program option interface
         self.ch_groupbox = QGroupBox("Segmentation channels")
@@ -157,13 +163,11 @@ class WEAWidget(QWidget):
         nuc_label = QLabel("Nucleus diam. (px)")
         cyto_label = QLabel("Cell diam. (px)")
         self.cell_size_field = QDoubleSpinBox()
-        # set default values for cell size
-        self.cell_size_field.setValue(100.0)
-        self.nucleus_size_field = QDoubleSpinBox()
-        # set default value for nucleus size
-        self.nucleus_size_field.setValue(30.0)
         self.cell_size_field.setRange(1, 1000)
+        self.cell_size_field.setValue(400)
+        self.nucleus_size_field = QDoubleSpinBox()
         self.nucleus_size_field.setRange(1, 1000)
+        self.nucleus_size_field.setValue(130.0)
 
         cyto_field_layout.addWidget(cyto_label)
         cyto_field_layout.addWidget(self.cell_size_field)
@@ -191,6 +195,7 @@ class WEAWidget(QWidget):
         # gui behavior
         self.choose_folder_btn.clicked.connect(self._open_file_dialog)
         self.assign_channels_btn.clicked.connect(self._assign_channels)
+        self.compute_label_increment_btn.clicked.connect(self._get_unique_label)
         self.sketch_cell_size.clicked.connect(self._sketch_cell)
         self.process_image_btn.clicked.connect(self._process_image)
         self.apply_manual_changes_btn.clicked.connect(
@@ -212,11 +217,11 @@ class WEAWidget(QWidget):
         else:
             return
 
-        imgpath = Path(self.img_folder)
+        self.imgpath = Path(self.img_folder)
         flist = []
 
         for ext in FILE_FORMATS:
-            flist.extend([f for f in imgpath.glob(ext)])
+            flist.extend([f for f in self.imgpath.glob(ext)])
 
         nfiles = len(flist)
 
@@ -246,7 +251,7 @@ class WEAWidget(QWidget):
                 self.current_img_metadata,
             ) = WoundRUs.IO.read_image(fpath)
 
-            channels = metadata["channels"]
+            channels = self.current_img_metadata["channels"]
             current_nch = len(channels)
 
             if current_nch != prev_nch:
@@ -277,13 +282,17 @@ class WEAWidget(QWidget):
             # if we dont enforce pixel size
             # retrieve pixel size information if available and display in GUI
             if not self.enforce_px_size_checkbox.isChecked():
-                self.px_size_entry.setValue(self.metadata["pixel_size"])
+                self.px_size_entry.setValue(
+                    self.current_img_metadata["pixel_size"]
+                )
 
     def _assign_channels(self):
         fileItem = self.flist_widget.currentItem()
         fname = fileItem.text()
 
         do_max_projection = self.do_maxproj_checkbox.isChecked()
+
+        self.current_filename = fname
 
         if self.current_img is None:
             return
@@ -293,6 +302,7 @@ class WEAWidget(QWidget):
         tubulin_choice = ch_from_text(self.tubgroup.currentText())
 
         if self.current_img.ndim == 4:
+            # ensure a variable named 'img2d' is created
             # reduce by finding focus in tubulin channel
             if do_max_projection:
                 # do max projection
@@ -304,11 +314,12 @@ class WEAWidget(QWidget):
             img2d = self.current_img
 
         force_pixel_size = self.enforce_px_size_checkbox.isChecked()
+        self.img2d = img2d
 
         if force_pixel_size:
             dxy = self.px_size_entry.value()
         else:
-            dxy = self.metadata["pixel_size"]
+            dxy = self.current_img_metadata["pixel_size"]
 
         use_tubulin_for_cyto = self.use_tubulin_for_cyto_checkbox.isChecked()
 
@@ -335,7 +346,7 @@ class WEAWidget(QWidget):
         # re-add image with the chosen channels
         ch_ids = tuple(sorted_dict.keys())
         self.viewer.add_image(
-            img2d[:, :, ch_ids],
+            self.img2d[:, :, ch_ids],
             channel_axis=-1,
             name=ch_names,
             colormap=ch_luts,
@@ -344,8 +355,20 @@ class WEAWidget(QWidget):
         # change contrast limit to 1-99% percentile
         for layer in self.viewer.layers:
             lo = np.percentile(layer.data, 0.5)
-            hi = np.percentile(layer.data, 99.5)
+            hi = np.percentile(layer.data, 99.8)
             layer.contrast_limits = [lo, hi]
+
+    def _get_unique_label(self):
+        if "cells" in self.viewer.layers:
+            # get current labels and remove 0 (background)
+            current_labels = set(np.unique(self.viewer.layers["cells"].data))
+            current_labels.remove(0)
+            intact_sequence = set(range(1, max(current_labels) + 2))
+            # get unique available id using bitwise XOR
+            available_ids = intact_sequence ^ current_labels
+            next_id = min(available_ids)
+            # assign id to the current selected label
+            self.viewer.layers["cells"].selected_label = next_id
 
     def _sketch_cell(self):
         if self.current_img is None:
@@ -356,8 +379,8 @@ class WEAWidget(QWidget):
 
         Ny, Nx = self.current_img.data.shape[:2]
         imgcenter = (Ny // 2, Nx // 2)
-        cellrad_px = 0.5 * cell_diam / self.fov.dxy
-        nucrad_px = 0.5 * nuc_diam / self.fov.dxy
+        cellrad_px = 0.5 * cell_diam
+        nucrad_px = 0.5 * nuc_diam
         sketch_data = [
             np.array([imgcenter, (cellrad_px, cellrad_px)]),
             np.array([imgcenter, (nucrad_px, nucrad_px)]),
@@ -378,177 +401,162 @@ class WEAWidget(QWidget):
                 face_color=["green", "blue"],
             )
 
-    def _run_wea_single(self):
+    def _process_image(self):
         celldiam = self.cell_size_field.value()
         nucdiam = self.nucleus_size_field.value()
 
-        if self.current_img:
-            pass
-        # if self.fov:
-        #     self.run_singlerun_btn.setText("Segmenting ...")
-        #     worker = self.__run_wea_task(celldiam, nucdiam)
-        #     worker.returned.connect(self.__display_result)
-        #     worker.finished.connect(self.__change_run_btn_status)
-        #     worker.start()
+        if self.current_img is not None:
+            self.process_image_btn.setText("Segmenting ...")
+            worker = self.__run_processing_task(celldiam, nucdiam)
+            worker.returned.connect(self.__display_result)
+            # change the text on the button back to 'normal'
+            worker.finished.connect(self.__reset_run_btn_status)
+            worker.start()
 
     @thread_worker
-    def __run_wea_task(self, celldiam, nucdiam):
+    def __run_processing_task(self, celldiam, nucdiam):
         if self.use_tubulin_for_cyto_checkbox.isChecked():
             cyto_channels = [1, 3]
         else:
             cyto_channels = [2, 3]
 
-        pass
-        # self.fov.segment_cells(
-        #     celldiam=celldiam, nucdiam=nucdiam, cytochs=cyto_channels
-        # )
-        # self.fov.run_detection(
-        #     cell_diam=celldiam, nuc_diam=nucdiam, cytochs=cyto_channels
-        # )
-        # (
-        #     cellpose_output,
-        #     cellpose_nucleus,
-        #     woundedge,
-        # ) = self.fov._detection_result()
-        # mtoc_df, cell_df = self.fov.run_analysis(
-        #     self.current_img.filename.name, nuc_diam=nucdiam
-        # )
+        cell_mask, nuc_mask = WoundRUs.Segmenter.segment_cells_and_nuclei(
+            self.img2d,
+            cell_diameter=celldiam,
+            nucleus_diameter=nucdiam,
+        )
+        wound_mask = WoundRUs.Segmenter.compute_wound_edge(cell_mask)
+        cone_mask, props_df = WoundRUs.Segmenter.process_edge_cells(
+            cell_mask, nuc_mask, wound_mask
+        )
 
-        # # write csv file output
-        # csv_out_path = self.current_img.filename.parent
-        # fprefix = self.current_img.filename.stem
+        return {
+            "cells": cell_mask,
+            "nuclei": nuc_mask,
+            "cone": cone_mask,
+            "wound": wound_mask,
+            "props_df": props_df,
+        }
 
-        # mtoc_df.to_csv(csv_out_path / f"{fprefix}_mtoc.csv", index=False)
-        # cell_df.to_csv(csv_out_path / f"{fprefix}_props.csv", index=False)
+    @thread_worker
+    def __apply_current_changes(self):
+        # fetch data from napari to do re-processing
+        cell_mask = self.viewer.layers["cells"].data
+        nuc_mask = self.viewer.layers["nuclei"].data
 
-        # self.run_singlerun_btn.setText("Analyzing ...")
-        # return {
-        #     "labcells": cellpose_output,
-        #     "labnucs": cellpose_nucleus,
-        #     "woundedge": woundedge,
-        #     "mtoc_df": mtoc_df,
-        #     "cell_df": cell_df,
-        # }
+        # recompute wound-edge
+        wound_mask = WoundRUs.Segmenter.compute_wound_edge(cell_mask)
+        cone_mask, props_df = WoundRUs.Segmenter.process_edge_cells(
+            cell_mask, nuc_mask, wound_mask
+        )
+
+        return {
+            "cells": cell_mask,
+            "nuclei": nuc_mask,
+            "cone": cone_mask,
+            "wound": wound_mask,
+            "props_df": props_df,
+        }
 
     def __check_args(*args):
         print(args)
 
-    def __change_run_btn_status(self):
-        self.run_singlerun_btn.setText("Do it!")
+    def __reset_run_btn_status(self):
+        self.process_image_btn.setText("Process image")
+
+    def __reset_apply_changes_btn_status(self):
+        self.apply_manual_changes_btn.setText("Apply changes")
 
     def __display_result(self, segresult):
-        self.viewer.add_labels(segresult["labcells"], name="detected cells")
-        self.viewer.add_labels(segresult["labnucs"], name="detected nuclei")
-        self.viewer.add_labels(
-            segresult["woundedge"],
-            name="wound edge",
-            num_colors=1,
-            color={1: "red"},
-        )
-        WEA.vis.add_to_napari(
-            self.viewer, segresult["mtoc_df"], segresult["cell_df"]
-        )
-
-    def _run_batch_segmentation(self):
-        Nfiles = self.flist_widget.count()
-        self.batch_progbar.setMinimum(0)
-        self.batch_progbar.setMaximum(Nfiles - 1)
-
-        self.run_batch_seg_btn.setText("... STOP segmentation")
-        worker = self._run_batch_segmentation_task()
-        worker.yielded.connect(self._update_batch_progbar)
-        worker.finished.connect(self._batch_seg_finished)
-        worker.start()
-
-    @thread_worker
-    def _run_batch_segmentation_task(self):
-        Nfiles = self.flist_widget.count()
-
-        # segmentation parameters
-        celldiam = self.cell_size_field.value()
-        nucdiam = self.nucleus_size_field.value()
-        pathdir = self.img_folder
-
-        cytoplasm_choice = ch_from_text(self.cytogroup.currentText())
-        nucleus_choice = ch_from_text(self.nucgroup.currentText())
-        tubulin_choice = ch_from_text(self.tubgroup.currentText())
-
-        # create a new folder for segmentation output
-        cpindir = pathdir / "cellpose_input"
-        segdir = pathdir / "segmentation_result"
-
-        cpindir.mkdir(exist_ok=True)
-        segdir.mkdir(exist_ok=True)
-
-        do_max_projection = self.do_maxproj_checkbox.isChecked()
-        zreduce_method = "maxproj" if do_max_projection else "slice"
-
-        # check if pixel size is forced
-        force_pixel_size = self.enforce_px_size_checkbox.isChecked()
-
-        if force_pixel_size:
-            dxy = self.px_size_entry.value()
+        if "cells" in self.viewer.layers:
+            self.viewer.layers["cells"].data = segresult["cells"]
         else:
-            dxy = self.current_img.dxy
+            cellmask_layer = self.viewer.add_labels(
+                segresult["cells"], name="cells"
+            )
+            cellmask_layer.contour = 2
 
-        for i in range(Nfiles):
-            _item = self.flist_widget.item(i)
-            fname = _item.text()
+        if "nuclei" in self.viewer.layers:
+            self.viewer.layers["nuclei"].data = segresult["nuclei"]
 
-            current_img = WEA.io.CanonizedImage(pathdir / fname)
+        else:
+            nucmask_layer = self.viewer.add_labels(
+                segresult["nuclei"], name="nuclei"
+            )
+            nucmask_layer.contour = 2
 
-            # get the more convenient Path object for the filename
-            current_fname = current_img.filename
+        if "orientation wedge" in self.viewer.layers:
+            self.viewer.layers["orientation wedge"].data = segresult["cone"]
+        else:
+            self.viewer.add_labels(segresult["cone"], name="orientation wedge")
 
-            fnout_prefix = f"{current_fname.stem}_{zreduce_method}"
-
-            if current_img.data.ndim == 4:
-                # reduce by finding focus in tubulin channel
-                if do_max_projection:
-                    img2d = current_img.max_project()
-                else:
-                    img2d = current_img.get_focused_plane(tubulin_choice)
-            else:
-                img2d = current_img.data
-
-            current_fov = WEA.core.ImageField(
-                img2d,
-                dxy,
-                nucleus_ch=nucleus_choice,
-                cyto_channel=cytoplasm_choice,
-                tubulin_ch=tubulin_choice,
+        if "wound" in self.viewer.layers:
+            self.viewer.layers["wound"].data = segresult["wound"]
+        else:
+            self.viewer.add_labels(
+                segresult["wound"],
+                name="wound",
+                num_colors=1,
+                color={1: "red"},
             )
 
-            current_fov.segment_cells(celldiam=celldiam, nucdiam=nucdiam)
-            current_fov.run_detection(cell_diam=celldiam, nuc_diam=nucdiam)
+        # draw cell axis
+        cell_axis_coordinates = []
 
-            _segres_rgb = current_fov._segmentation_result(
-                clip_low=(0.1, 0.1, 0.1), clip_high=(99.9, 99.9, 99.9)
+        for i, row in segresult["props_df"].iterrows():
+            start_coord = (row["back_y"], row["back_x"])
+            end_coord = (row["migration_axis_y"], row["migration_axis_x"])
+            cell_axis_coordinates.append([start_coord, end_coord])
+
+        if "cell axis" in self.viewer.layers:
+            self.viewer.layers["cell axis"].data = cell_axis_coordinates
+        else:
+            self.viewer.add_shapes(
+                cell_axis_coordinates,
+                shape_type="line",
+                edge_width=5,
+                edge_color="#ff8ba0",
             )
-            _segres_rgb = np.uint8(_segres_rgb * 255)
 
-            imwrite(
-                str(cpindir / f"{fnout_prefix}.tif"),
-                current_fov.cp_input,
+        nuc_axis_coordinates = []
+
+        for i, row in segresult["props_df"].iterrows():
+            start_coord = (row["nucleus_centroid_y"], row["nucleus_centroid_x"])
+            end_coord = (row["nucleus_major_y"], row["nucleus_major_x"])
+            nuc_axis_coordinates.append([start_coord, end_coord])
+
+        if "cell axis" in self.viewer.layers:
+            self.viewer.layers["nucleus axis"].data = nuc_axis_coordinates
+        else:
+            self.viewer.add_shapes(
+                nuc_axis_coordinates,
+                shape_type="line",
+                edge_width=5,
+                edge_color="#fa8128",
             )
-            cv2.imwrite(
-                str(segdir / f"{fnout_prefix}.png"),
-                _segres_rgb[:, :, ::-1],
-            )
+    
+        # also save the data to current folder
+        current_path = self.imgpath / self.current_filename
+        df_fn_prefix = f"{current_path.stem}_props.csv"
+        img_fn_prefix = f"{current_path.stem}_cp.tif"
+        wedge_fn_prefix = f"{current_path.stem}_wedge.tif"
+        mask_fn_prefix = f"{current_path.stem}_cp_masks.tif"
 
-            yield i
+        segresult["props_df"].to_csv(self.imgpath / df_fn_prefix, index=False)
 
-    def _run_batch_analysis(self):
-        return None
-
-    def _update_batch_progbar(self, i):
-        self.batch_progbar.setValue(i)
-
-    def _batch_seg_finished(self):
-        self.run_batch_seg_btn.setText("Run batch segmentation")
+        # save input image and its mask
+        imwrite(self.imgpath / img_fn_prefix, self.img2d)
+        imwrite(self.imgpath / mask_fn_prefix, segresult["cells"])
+        imwrite(self.imgpath / wedge_fn_prefix, segresult["cone"])
+        
 
     def _apply_manual_changes(self):
-        pass
+        self.apply_manual_changes_btn.setText(" ... ")
+        worker = self.__apply_current_changes()
+        worker.returned.connect(self.__display_result)
+        # change the text on the button back to 'normal'
+        worker.finished.connect(self.__reset_apply_changes_btn_status)
+        worker.start()
 
 
 @napari_hook_implementation
