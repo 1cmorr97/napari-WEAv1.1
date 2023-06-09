@@ -513,6 +513,7 @@ class WEAWidget(QWidget):
         else:
             self.viewer.add_shapes(
                 cell_axis_coordinates,
+                name="cell axis",
                 shape_type="line",
                 edge_width=5,
                 edge_color="#ff8ba0",
@@ -525,22 +526,24 @@ class WEAWidget(QWidget):
             end_coord = (row["nucleus_major_y"], row["nucleus_major_x"])
             nuc_axis_coordinates.append([start_coord, end_coord])
 
-        if "cell axis" in self.viewer.layers:
+        if "nucleus axis" in self.viewer.layers:
             self.viewer.layers["nucleus axis"].data = nuc_axis_coordinates
         else:
             self.viewer.add_shapes(
                 nuc_axis_coordinates,
+                name="nucleus axis",
                 shape_type="line",
                 edge_width=5,
                 edge_color="#fa8128",
             )
-    
+
         # also save the data to current folder
         current_path = self.imgpath / self.current_filename
         df_fn_prefix = f"{current_path.stem}_props.csv"
         img_fn_prefix = f"{current_path.stem}_cp.tif"
         wedge_fn_prefix = f"{current_path.stem}_wedge.tif"
         mask_fn_prefix = f"{current_path.stem}_cp_masks.tif"
+        nucmask_fn_prefix = f"{current_path.stem}_nucmasks.tif"
 
         segresult["props_df"].to_csv(self.imgpath / df_fn_prefix, index=False)
 
@@ -548,7 +551,7 @@ class WEAWidget(QWidget):
         imwrite(self.imgpath / img_fn_prefix, self.img2d)
         imwrite(self.imgpath / mask_fn_prefix, segresult["cells"])
         imwrite(self.imgpath / wedge_fn_prefix, segresult["cone"])
-        
+        imwrite(self.imgpath / nucmask_fn_prefix, segresult["nuclei"])
 
     def _apply_manual_changes(self):
         self.apply_manual_changes_btn.setText(" ... ")
