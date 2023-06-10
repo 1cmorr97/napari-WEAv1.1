@@ -20,6 +20,7 @@ from pathlib import Path
 import cv2
 import WoundRUs
 import numpy as np
+import pandas as pd
 from napari.qt.threading import thread_worker
 from napari_plugin_engine import napari_hook_implementation
 from qtpy.QtCore import QProcess
@@ -220,8 +221,22 @@ class WEAWidget(QWidget):
         self.imgpath = Path(self.img_folder)
         flist = []
 
+        excluded_suffixes = ["_cp_masks", "_cp", "_nucmasks", "_wedge"]
+
         for ext in FILE_FORMATS:
-            flist.extend([f for f in self.imgpath.glob(ext)])
+            # filter output tif files
+            if ext == "*.tif" or ext == "*.tiff":
+                _flist = [
+                    file
+                    for file in self.imgpath.glob(ext)
+                    if not any(
+                        suffix in file.stem for suffix in excluded_suffixes
+                    )
+                ]
+            else:
+                _flist = [f for f in self.imgpath.glob(ext)]
+
+            flist.extend(_flist)
 
         nfiles = len(flist)
 
@@ -430,24 +445,13 @@ class WEAWidget(QWidget):
             cell_mask, nuc_mask, wound_mask
         )
 
-        return {
-            "cells": cell_mask,
-            "nuclei": nuc_mask,
-            "cone": cone_mask,
-            "wound": wound_mask,
-            "props_df": props_df,
-        }
-
-    @thread_worker
-    def __apply_current_changes(self):
-        # fetch data from napari to do re-processing
-        cell_mask = self.viewer.layers["cells"].data
-        nuc_mask = self.viewer.layers["nuclei"].data
-
-        # recompute wound-edge
-        wound_mask = WoundRUs.Segmenter.compute_wound_edge(cell_mask)
-        cone_mask, props_df = WoundRUs.Segmenter.process_edge_cells(
-            cell_mask, nuc_mask, wound_mask
+        mtoc_df = WoundRUs.Segmenter.find_mtocs(
+            self.img2d[:, :, 1],
+            self.img2d[:, :, 0],
+            cell_mask,
+            nuc_mask,
+            cone_mask,
+            props_df,
         )
 
         return {
@@ -456,6 +460,61 @@ class WEAWidget(QWidget):
             "cone": cone_mask,
             "wound": wound_mask,
             "props_df": props_df,
+            "mtoc_df": mtoc_df,
+        }
+
+    @thread_worker
+    def __apply_current_changes(self):
+        # fetch data from napari to do re-processing
+        cell_mask = self.viewer.layers["cells"].data
+        nuc_mask = self.viewer.layers["nuclei"].data
+        cone_mask = self.viewer.layers["orientation wedge"].data
+
+        # recompute wound-edge
+        wound_mask = WoundRUs.Segmenter.compute_wound_edge(cell_mask)
+        cone_mask, props_df = WoundRUs.Segmenter.process_edge_cells(
+            cell_mask, nuc_mask, wound_mask
+        )
+
+        (
+            c_mother_mtoc_arr,
+            c_daughter_mtoc_arr,
+        ) = WoundRUs.utilfuncs.get_napari_mtocs(self.viewer)
+
+        c_mother_df = WoundRUs.utilfuncs.get_tubulin_intensity(
+            self.img2d[:, :, 0], c_mother_mtoc_arr
+        )
+        c_daughter_df = WoundRUs.utilfuncs.get_tubulin_intensity(
+            self.img2d[:, :, 0], c_daughter_mtoc_arr
+        )
+
+        c_mother_df["mtoc_id"] = "mother"
+        c_daughter_df["mtoc_id"] = "daughter"
+
+        mtoc_df = pd.concat(
+            [c_mother_df, c_daughter_df], axis=0, ignore_index=True
+        )
+
+        mtoc_df = WoundRUs.utilfuncs.det_classic_ori(
+            mtoc_df, cone_mask, nuc_mask
+        )
+
+        mtoc_locs = tuple(
+            [
+                mtoc_df["mtoc_y"].values.astype(int),
+                mtoc_df["mtoc_x"].values.astype(int),
+            ]
+        )
+
+        mtoc_df["cell_id"] = cell_mask[mtoc_locs]
+
+        return {
+            "cells": cell_mask,
+            "nuclei": nuc_mask,
+            "cone": cone_mask,
+            "wound": wound_mask,
+            "props_df": props_df,
+            "mtoc_df": mtoc_df,
         }
 
     def __check_args(*args):
@@ -537,6 +596,29 @@ class WEAWidget(QWidget):
                 edge_color="#fa8128",
             )
 
+        _mtoc = segresult["mtoc_df"]
+        _mother_mtoc = _mtoc[_mtoc["mtoc_id"] == "mother"]
+        _daughter_mtoc = _mtoc[_mtoc["mtoc_id"] == "daughter"]
+
+        # display mtoc as points
+        if "mother mtoc" in self.viewer.layers:
+            _mtoc_yx = _mother_mtoc[["mtoc_y", "mtoc_x"]].values
+            self.viewer.layers["mother mtoc"].data = _mtoc_yx
+        else:
+            _mtoc_yx = _mother_mtoc[["mtoc_y", "mtoc_x"]].values
+            self.viewer.add_points(
+                _mtoc_yx, face_color="green", name="mother mtoc"
+            )
+
+        if "daughter mtoc" in self.viewer.layers:
+            _mtoc_yx = _daughter_mtoc[["mtoc_y", "mtoc_x"]].values
+            self.viewer.layers["daughter mtoc"].data = _mtoc_yx
+        else:
+            _mtoc_yx = _daughter_mtoc[["mtoc_y", "mtoc_x"]].values
+            self.viewer.add_points(
+                _mtoc_yx, face_color="white", name="daughter mtoc"
+            )
+
         # also save the data to current folder
         current_path = self.imgpath / self.current_filename
         df_fn_prefix = f"{current_path.stem}_props.csv"
@@ -544,8 +626,10 @@ class WEAWidget(QWidget):
         wedge_fn_prefix = f"{current_path.stem}_wedge.tif"
         mask_fn_prefix = f"{current_path.stem}_cp_masks.tif"
         nucmask_fn_prefix = f"{current_path.stem}_nucmasks.tif"
+        mtoc_fn_prefix = f"{current_path.stem}_mtoc.csv"
 
         segresult["props_df"].to_csv(self.imgpath / df_fn_prefix, index=False)
+        segresult["mtoc_df"].to_csv(self.imgpath / mtoc_fn_prefix, index=False)
 
         # save input image and its mask
         imwrite(self.imgpath / img_fn_prefix, self.img2d)
