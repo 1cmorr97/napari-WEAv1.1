@@ -181,11 +181,21 @@ class WEAWidget(QWidget):
         self.mtoc_log_sigma.setRange(1, 20)
         self.mtoc_log_sigma.setValue(3.0)
 
+        self.mtoc_text_x_offset = QDoubleSpinBox()
+        self.mtoc_text_x_offset.setRange(-50, 50)
+        self.mtoc_text_x_offset.setValue(0.0)
+
+        self.mtoc_text_y_offset = QDoubleSpinBox()
+        self.mtoc_text_y_offset.setRange(-50, 50)
+        self.mtoc_text_y_offset.setValue(0.0)
+
         _wea_form_layout.addRow("Cell diam. (px)", self.cell_size_field)
         _wea_form_layout.addRow("Nucleus diam. (px)", self.nucleus_size_field)
         _wea_form_layout.addRow("mtoc LoG sigma", self.mtoc_log_sigma)
         _wea_form_layout.addRow("slope thres.", self.slope_threshold)
         _wea_form_layout.addRow("nucleus weight sigma", self.nucleus_sigma)
+        _wea_form_layout.addRow("mtoc text offset (x)", self.mtoc_text_x_offset)
+        _wea_form_layout.addRow("mtoc text offset (y)", self.mtoc_text_y_offset)
 
         main_tab.addTab(self.wea_tab_widget, "Segmentation parameters")
 
@@ -624,10 +634,20 @@ class WEAWidget(QWidget):
         _mother_mtoc = _mtoc[_mtoc["mtoc_id"] == "mother"]
         _daughter_mtoc = _mtoc[_mtoc["mtoc_id"] == "daughter"]
 
+        _mtoc_x_offset = self.mtoc_text_x_offset.value()
+        _mtoc_y_offset = self.mtoc_text_y_offset.value()
+
         if "daughter mtoc" in self.viewer.layers:
+            _text = {
+                "string": "{tubulin_intensity:0.0f}",
+                "size": 12,
+                "color": "white",
+                "translation": np.array([_mtoc_y_offset, _mtoc_x_offset]),
+            }
             _mtoc_yx = _daughter_mtoc[["mtoc_y", "mtoc_x"]].values
             self.viewer.layers["daughter mtoc"].data = _mtoc_yx
             self.viewer.layers["daughter mtoc"].features = _daughter_mtoc
+            self.viewer.layers["daughter mtoc"].text = _text
 
         else:
             _mtoc_yx = _daughter_mtoc[["mtoc_y", "mtoc_x"]].values
@@ -635,7 +655,7 @@ class WEAWidget(QWidget):
                 "string": "{tubulin_intensity:0.0f}",
                 "size": 12,
                 "color": "white",
-                "translation": np.array([-7, 0]),
+                "translation": np.array([_mtoc_y_offset, _mtoc_x_offset]),
             }
 
             self.viewer.add_points(
@@ -648,9 +668,16 @@ class WEAWidget(QWidget):
             )
 
         if "mother mtoc" in self.viewer.layers:
+            _text = {
+                "string": "{tubulin_intensity:0.0f}",
+                "size": 12,
+                "color": "green",
+                "translation": np.array([_mtoc_y_offset, _mtoc_x_offset]),
+            }
             _mtoc_yx = _mother_mtoc[["mtoc_y", "mtoc_x"]].values
             self.viewer.layers["mother mtoc"].data = _mtoc_yx
             self.viewer.layers["mother mtoc"].features = _mother_mtoc
+            self.viewer.layers["mother mtoc"].text = _text
         else:
             _tub_int_vals = _mother_mtoc["tubulin_intensity"].values
             _mtoc_yx = _mother_mtoc[["mtoc_y", "mtoc_x"]].values
@@ -658,7 +685,7 @@ class WEAWidget(QWidget):
                 "string": "{tubulin_intensity:0.0f}",
                 "size": 12,
                 "color": "green",
-                "translation": np.array([-7, 0]),
+                "translation": np.array([_mtoc_y_offset, _mtoc_x_offset]),
             }
             self.viewer.add_points(
                 _mtoc_yx,
