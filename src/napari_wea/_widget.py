@@ -38,6 +38,8 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
     QCheckBox,
+    QTabWidget,
+    QFormLayout,
 )
 from qtpy.QtCore import Qt
 from tifffile import imwrite
@@ -115,8 +117,11 @@ class WEAWidget(QWidget):
         self.compute_label_increment_btn = QPushButton("Get unique label")
         self.layout.addWidget(self.compute_label_increment_btn)
 
+        main_tab = QTabWidget()
+
         # program option interface
-        self.ch_groupbox = QGroupBox("Segmentation channels")
+        # self.ch_groupbox = QGroupBox("Segmentation channels")
+        self.ch_tab_widget = QWidget()
         self.ch_vbox = QVBoxLayout()
         self.cytogroup = QComboBox(self)
         self.nucgroup = QComboBox(self)
@@ -146,47 +151,53 @@ class WEAWidget(QWidget):
         self.ch_vbox.addWidget(self.use_tubulin_for_cyto_checkbox)
         self.ch_vbox.addWidget(self.enforce_px_size_checkbox)
         self.ch_vbox.addWidget(px_size_widget)
-        self.ch_vbox.addWidget(self.assign_channels_btn)
 
         # set channel vbox (and its widgets) to channel groupbox
-        self.ch_groupbox.setLayout(self.ch_vbox)
-        self.layout.addWidget(self.ch_groupbox)
+        self.ch_tab_widget.setLayout(self.ch_vbox)
+        main_tab.addTab(self.ch_tab_widget, "Segmentation channels")
 
-        # WEA option interface
-        self.wea_groupbox = QGroupBox("Segmentation parameters")
-        self.wea_vbox = QVBoxLayout()
-        nuc_field_widget = QWidget()
-        nuc_field_layout = QHBoxLayout()
-        cyto_field_widget = QWidget()
-        cyto_field_layout = QHBoxLayout()
-        nuc_field_widget.setLayout(nuc_field_layout)
-        cyto_field_widget.setLayout(cyto_field_layout)
-        nuc_label = QLabel("Nucleus diam. (px)")
-        cyto_label = QLabel("Cell diam. (px)")
-        self.cell_size_field = QDoubleSpinBox()
-        self.cell_size_field.setRange(1, 1000)
-        self.cell_size_field.setValue(400)
+        # WEA option interface (Segmentation parameters)
+        self.wea_tab_widget = QWidget()
+        _wea_form_layout = QFormLayout()
+        self.wea_tab_widget.setLayout(_wea_form_layout)
+
         self.nucleus_size_field = QDoubleSpinBox()
         self.nucleus_size_field.setRange(1, 1000)
         self.nucleus_size_field.setValue(130.0)
 
-        cyto_field_layout.addWidget(cyto_label)
-        cyto_field_layout.addWidget(self.cell_size_field)
-        nuc_field_layout.addWidget(nuc_label)
-        nuc_field_layout.addWidget(self.nucleus_size_field)
+        self.cell_size_field = QDoubleSpinBox()
+        self.cell_size_field.setRange(1, 1000)
+        self.cell_size_field.setValue(400)
+
+        self.slope_threshold = QDoubleSpinBox()
+        self.slope_threshold.setRange(1, 1000)
+        self.slope_threshold.setValue(50)
+
+        self.nucleus_sigma = QDoubleSpinBox()
+        self.nucleus_sigma.setRange(1, 1000)
+        self.nucleus_sigma.setValue(50)
+
+        self.mtoc_log_sigma = QDoubleSpinBox()
+        self.mtoc_log_sigma.setRange(1, 20)
+        self.mtoc_log_sigma.setValue(3.0)
+
+        _wea_form_layout.addRow("Cell diam. (px)", self.cell_size_field)
+        _wea_form_layout.addRow("Nucleus diam. (px)", self.nucleus_size_field)
+        _wea_form_layout.addRow("mtoc LoG sigma", self.mtoc_log_sigma)
+        _wea_form_layout.addRow("slope thres.", self.slope_threshold)
+        _wea_form_layout.addRow("nucleus weight sigma", self.nucleus_sigma)
+
+        main_tab.addTab(self.wea_tab_widget, "Segmentation parameters")
 
         self.sketch_cell_size = QPushButton("Sketch sizes")
         self.process_image_btn = QPushButton("Process image")
         self.apply_manual_changes_btn = QPushButton("apply changes")
 
-        self.wea_vbox.addWidget(cyto_field_widget)
-        self.wea_vbox.addWidget(nuc_field_widget)
-        self.wea_vbox.addWidget(self.sketch_cell_size)
-        self.wea_vbox.addWidget(self.process_image_btn)
-        self.wea_vbox.addWidget(self.apply_manual_changes_btn)
-
-        self.wea_groupbox.setLayout(self.wea_vbox)
-        self.layout.addWidget(self.wea_groupbox)
+        self.layout.addWidget(main_tab)
+        self.layout.addWidget(self.assign_channels_btn)
+        self.layout.addWidget(self.sketch_cell_size)
+        self.layout.addWidget(self.process_image_btn)
+        self.layout.addWidget(self.apply_manual_changes_btn)
 
         # fill the rest of the vertical space so preceding widgets stack
         # from top-to-bottom
@@ -419,17 +430,24 @@ class WEAWidget(QWidget):
     def _process_image(self):
         celldiam = self.cell_size_field.value()
         nucdiam = self.nucleus_size_field.value()
+        slope_thres = self.slope_threshold.value()
+        log_sigma = self.mtoc_log_sigma.value()
+        weight_sigma = self.nucleus_sigma.value()
 
         if self.current_img is not None:
             self.process_image_btn.setText("Segmenting ...")
-            worker = self.__run_processing_task(celldiam, nucdiam)
+            worker = self.__run_processing_task(
+                celldiam, nucdiam, log_sigma, weight_sigma, slope_thres
+            )
             worker.returned.connect(self.__display_result)
             # change the text on the button back to 'normal'
             worker.finished.connect(self.__reset_run_btn_status)
             worker.start()
 
     @thread_worker
-    def __run_processing_task(self, celldiam, nucdiam):
+    def __run_processing_task(
+        self, celldiam, nucdiam, log_sigma, weight_sigma, slope_threshold
+    ):
         if self.use_tubulin_for_cyto_checkbox.isChecked():
             cyto_channels = [1, 3]
         else:
@@ -445,6 +463,8 @@ class WEAWidget(QWidget):
             cell_mask, nuc_mask, wound_mask
         )
 
+        # get segmentation parameters
+
         mtoc_df = WoundRUs.Segmenter.find_mtocs(
             self.img2d[:, :, 1],
             self.img2d[:, :, 0],
@@ -452,6 +472,9 @@ class WEAWidget(QWidget):
             nuc_mask,
             cone_mask,
             props_df,
+            weight_sigma=weight_sigma,
+            slope_threshold=slope_threshold,
+            log_sigma=log_sigma,
         )
 
         return {
@@ -596,27 +619,54 @@ class WEAWidget(QWidget):
                 edge_color="#fa8128",
             )
 
+        # display mtoc as points
         _mtoc = segresult["mtoc_df"]
         _mother_mtoc = _mtoc[_mtoc["mtoc_id"] == "mother"]
         _daughter_mtoc = _mtoc[_mtoc["mtoc_id"] == "daughter"]
 
-        # display mtoc as points
-        if "mother mtoc" in self.viewer.layers:
-            _mtoc_yx = _mother_mtoc[["mtoc_y", "mtoc_x"]].values
-            self.viewer.layers["mother mtoc"].data = _mtoc_yx
-        else:
-            _mtoc_yx = _mother_mtoc[["mtoc_y", "mtoc_x"]].values
-            self.viewer.add_points(
-                _mtoc_yx, face_color="green", name="mother mtoc"
-            )
-
         if "daughter mtoc" in self.viewer.layers:
             _mtoc_yx = _daughter_mtoc[["mtoc_y", "mtoc_x"]].values
             self.viewer.layers["daughter mtoc"].data = _mtoc_yx
+            self.viewer.layers["daughter mtoc"].features = _daughter_mtoc
+
         else:
             _mtoc_yx = _daughter_mtoc[["mtoc_y", "mtoc_x"]].values
+            _text = {
+                "string": "{tubulin_intensity:0.0f}",
+                "size": 12,
+                "color": "white",
+                "translation": np.array([-7, 0]),
+            }
+
             self.viewer.add_points(
-                _mtoc_yx, face_color="white", name="daughter mtoc"
+                _mtoc_yx,
+                face_color="white",
+                name="daughter mtoc",
+                features=_daughter_mtoc,
+                text=_text,
+                size=25,
+            )
+
+        if "mother mtoc" in self.viewer.layers:
+            _mtoc_yx = _mother_mtoc[["mtoc_y", "mtoc_x"]].values
+            self.viewer.layers["mother mtoc"].data = _mtoc_yx
+            self.viewer.layers["mother mtoc"].features = _mother_mtoc
+        else:
+            _tub_int_vals = _mother_mtoc["tubulin_intensity"].values
+            _mtoc_yx = _mother_mtoc[["mtoc_y", "mtoc_x"]].values
+            _text = {
+                "string": "{tubulin_intensity:0.0f}",
+                "size": 12,
+                "color": "green",
+                "translation": np.array([-7, 0]),
+            }
+            self.viewer.add_points(
+                _mtoc_yx,
+                face_color="green",
+                name="mother mtoc",
+                features=_mother_mtoc,
+                text=_text,
+                size=25,
             )
 
         # also save the data to current folder
