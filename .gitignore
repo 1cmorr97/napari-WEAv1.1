@@ -1,0 +1,10 @@
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+*.log
+*.py[cod]
+__pycache__/
+.ipynb_checkpoints/
+*.egg-info/
